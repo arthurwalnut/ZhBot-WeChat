@@ -149,8 +149,12 @@ def main():
             if args.hwnd is not None:
                 found = [w for w in report["windows"] if w["hwnd"] == args.hwnd]
                 if len(found) != 1:
-                    raise ValueError("当前窗口列表未唯一匹配 --hwnd。")
-                report["probe"] = query("probe", (found[0], args.include_text))
+                    report["errors"].append("当前窗口列表未唯一匹配 --hwnd。")
+                else:
+                    try:
+                        report["probe"] = query("probe", (found[0], args.include_text))
+                    except RuntimeError as exc:
+                        report["errors"].append(str(exc))
             save_json(args.output, report)
             print(json.dumps({key: value for key, value in report.items() if key != "probe"}, ensure_ascii=False, indent=2))
             if report["errors"]:
