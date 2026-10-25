@@ -2,8 +2,6 @@
 
 # Observed on this computer, 2026-10-25. Message controls were not exposed in
 # the empty chat page; leave their selectors empty until a real session is read.
-OBSERVED_VERSION = "4.1.15.13"
-MAIN_CLASSES = {"mmui::MainWindow"}
 PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
 SELECTOR_FIELDS = ("control_type", "class_name", "automation_id", "name")
 

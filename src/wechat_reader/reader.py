@@ -22,7 +22,7 @@ class Message:
 
 @dataclass(frozen=True)
 class Snapshot:
-    chat_key: str
+    chat_key: str | tuple
     title: str
     messages: tuple[Message, ...] | list[Message]
     observed_at: str

@@ -129,7 +129,8 @@ class UIABackend:
             if include_text:
                 item["name"] = node.name
             controls.append(item)
-        return {"window": current, "control_count": len(nodes), "controls": controls,
+        return {"window": current, "uia_root_class": root.class_name,
+                "control_count": len(nodes), "controls": controls,
                 "text_included": include_text, "reception_verified": False}
 
     def read_snapshot(self, config):
@@ -145,7 +146,10 @@ class UIABackend:
         container = profiles.unique(nodes, rules.get("messages", {}), "消息列表")
         # Require bottom-of-list evidence. Never scroll to obtain it.
         from pywinauto.controls.uiawrapper import UIAWrapper
-        scroll = UIAWrapper(container).iface_scroll
+        try:
+            scroll = UIAWrapper(container).iface_scroll
+        except Exception as exc:
+            raise ValueError("消息列表未提供可核实的滚动状态；需按真实控件继续适配。") from exc
         position = scroll.CurrentVerticalScrollPercent
         if position not in (-1, 100):
             raise ValueError("消息列表不在底部；存在历史滚动，暂停并重建基线。")
@@ -165,6 +169,14 @@ class UIABackend:
                                     runtime_key=tuple(row.runtime_id)))
         if not rows:
             raise ValueError("没有可核实的消息行；不把空列表视为已接入。")
+        # Recheck after traversal: a chat/window may change during a UIA query.
+        after, current_root = self._root()
+        after_nodes = current_root.descendants(depth=24)
+        after_title = profiles.unique(after_nodes, rules.get("title", {}), "会话标题")
+        after_container = profiles.unique(after_nodes, rules.get("messages", {}), "消息列表")
+        if (after["minimized"] or after_title.name != config["chat"]["title"]
+                or tuple(after_container.runtime_id) != tuple(container.runtime_id)):
+            raise ValueError("读取过程中窗口或会话结构变化，丢弃本次快照并重新选择。")
         return Snapshot(chat_key=(current["hwnd"], tuple(container.runtime_id), title.name),
                         title=title.name, messages=messages,
                         observed_at=datetime.now(timezone.utc).isoformat(), backend="uia")
