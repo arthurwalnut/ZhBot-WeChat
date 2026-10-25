@@ -1,0 +1,12 @@
+.venv/
+.python/
+.cache/
+.research/
+runtime/
+config.local.toml
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+*.pyc

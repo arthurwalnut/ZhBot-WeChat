@@ -1,0 +1,14 @@
+# Tested in this project's CPython 3.12.12 x64 environment on Windows 11.
+# Constraints only; install the desired extras from pyproject.toml.
+Pillow==13.0.0
+tzdata==2026.5
+pywinauto==0.6.9
+pywin32==312
+comtypes==1.4.17
+six==1.17.0
+pytest==9.1.1
+colorama==0.4.6
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+pygments==2.21.0

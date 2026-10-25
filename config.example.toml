@@ -1,0 +1,24 @@
+# 占位配置。请先运行 select，不能直接使用 HWND/PID=0。
+[binding]
+hwnd = 0
+pid = 0
+process_started = "REPLACE_WITH_OBSERVED_PROCESS_START"
+process_path = "REPLACE_WITH_OBSERVED_EXE_PATH"
+class_name = "REPLACE_WITH_OBSERVED_WINDOW_CLASS"
+version = "REPLACE_WITH_DETECTED_VERSION"
+
+[chat]
+account_alias = "LOCAL_ACCOUNT_ALIAS"
+alias = "LOCAL_CHAT_ALIAS"
+title = "REPLACE_WITH_OBSERVED_CHAT_TITLE"
+expected_type = "unknown"
+
+# 本次只有空聊天页的真实控件证据；尚无已验证的消息规则。
+# 以下属性由 doctor --hwnd <实际句柄> --include-text 的真实树确定。
+# 属性可用：control_type、class_name、automation_id、name。
+# title/messages 必须在所选窗口唯一匹配；row 匹配列表直接子项；text 匹配行内正文。
+# 空规则使 watch 明确停止，不会输出模拟消息。
+[selectors.title]
+[selectors.messages]
+[selectors.row]
+[selectors.text]
