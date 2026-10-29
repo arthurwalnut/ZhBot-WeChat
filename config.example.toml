@@ -1,4 +1,6 @@
-# 占位配置。请先运行 select，不能直接使用 HWND/PID=0。
+# 结构示例。请先运行 select 生成本机配置，不能直接使用 HWND/PID=0。
+# 2026-10-29 微信 4.1.15.13 私聊控件规则已实测；群聊未验证。
+# select 读取并确认当前会话标题，再自动填入以下规则。
 [binding]
 hwnd = 0
 pid = 0
@@ -12,13 +14,24 @@ account_alias = "LOCAL_ACCOUNT_ALIAS"
 alias = "LOCAL_CHAT_ALIAS"
 title = "REPLACE_WITH_OBSERVED_CHAT_TITLE"
 expected_type = "unknown"
+# 仅记录用户预期；实际 detected_chat_type 由每次 UIA 快照独立探测。
 
-# 本次只有空聊天页的真实控件证据；尚无已验证的消息规则。
-# 以下属性由 doctor --hwnd <实际句柄> --include-text 的真实树确定。
+# 以下规则来自本机真实私聊 UIA 树，窗口与会话绑定仍必须重新选择。
 # 属性可用：control_type、class_name、automation_id、name。
-# title/messages 必须在所选窗口唯一匹配；row 匹配列表直接子项；text 匹配行内正文。
-# 空规则使 watch 明确停止，不会输出模拟消息。
+# title/messages 必须唯一；row 匹配列表直接子项；text 匹配行自身或行内正文。
+# 仅观察列表视口相交行；无 ScrollPattern，视口变化会报告 gap，期间可能漏读。
 [selectors.title]
+control_type = "Text"
+automation_id = "content_view.top_content_view.title_h_view.left_v_view.left_content_v_view.left_ui_.big_title_line_h_view.current_chat_name_label"
+
 [selectors.messages]
+control_type = "List"
+class_name = "mmui::RecyclerListView"
+automation_id = "chat_message_list"
+
 [selectors.row]
+control_type = "ListItem"
+
 [selectors.text]
+control_type = "ListItem"
+class_name = "mmui::ChatTextItemView"
