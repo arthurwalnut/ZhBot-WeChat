@@ -20,10 +20,11 @@ from PIL import Image
 
 
 MAX_BYTES = 1024 * 1024
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
 MAX_DIMENSION = 1024
 MAX_FRAMES = 300
 MAX_PIXELS = 64 * 1024 * 1024
-WAIT_SECONDS = 60
+WAIT_SECONDS = 30
 
 
 class StickerError(ValueError):
@@ -91,6 +92,14 @@ class StickerService:
             UNIQUE (account_id, chat_id, native_message_id))""")
         connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS unique_active_sticker
             ON stickers(account_id, chat_id, digest) WHERE deleted = 0""")
+        # Additive migration: existing GIF files, ownership and rows stay intact.
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(stickers)")}
+        for name, kind in (("source_digest", "TEXT"), ("source_path", "TEXT"), ("source_bytes", "INTEGER")):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE stickers ADD COLUMN {name} {kind}")
+        connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS unique_active_sticker_source
+            ON stickers(account_id, chat_id, source_digest)
+            WHERE deleted=0 AND source_digest IS NOT NULL""")
 
     def begin_wait(self, connection, *, account_id, chat_id, sender_id, received_at):
         _identity(account_id, chat_id, sender_id)
@@ -135,25 +144,19 @@ class StickerService:
                 "native_message_id": native_message_id, "received_at": float(received_at),
                 "wait_started_at": waiting["started_at"], "wait_expires_at": waiting["expires_at"]}
 
-    def prepare(self, data: bytes, *, source_format="GIF", note=""):
-        """Validate and atomically persist bytes before opening the business transaction."""
-        information = _gif_info(data)
-        if source_format not in ("GIF", "PNG"):
-            raise StickerError("当前仅接受 GIF 原件或已明确说明的 PNG 转换")
-        if not isinstance(note, str) or len(note) > 500:
-            raise StickerError("表情转换说明无效")
-        digest = sha256(data).hexdigest()
-        self.directory.mkdir(parents=True, exist_ok=True)
-        if self.directory.resolve() != self.directory or self.directory.is_symlink():
+    @staticmethod
+    def _persist(directory, filename, data):
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory.resolve() != directory or directory.is_symlink():
             raise StickerError("表情保存目录发生重定向")
-        destination = self.directory / (digest + ".gif")
+        destination = directory / filename
         if destination.exists():
             if destination.is_symlink() or destination.stat().st_size != len(data) or destination.read_bytes() != data:
                 raise StickerError("同摘要的现有表情文件内容不一致")
         else:
             temporary = None
             try:
-                with tempfile.NamedTemporaryFile(prefix=".upload-", suffix=".tmp", dir=self.directory, delete=False) as handle:
+                with tempfile.NamedTemporaryFile(prefix=".upload-", suffix=".tmp", dir=directory, delete=False) as handle:
                     temporary = Path(handle.name)
                     handle.write(data)
                     handle.flush()
@@ -162,8 +165,31 @@ class StickerService:
             finally:
                 if temporary is not None and temporary.exists():
                     temporary.unlink()  # Only this call's uncommitted temporary file.
+        return destination
+
+    def prepare(self, data: bytes, *, source_format="GIF", note="", source_data=None, legacy_digest=None):
+        """Validate and atomically persist bytes before opening the business transaction."""
+        information = _gif_info(data)
+        if source_format not in ("GIF", "PNG"):
+            raise StickerError("当前仅接受 GIF 原件或已明确说明的 PNG 转换")
+        if not isinstance(note, str) or len(note) > 500:
+            raise StickerError("表情转换说明无效")
+        if source_data is None and source_format == "GIF":
+            source_data = data
+        signatures = {"GIF": (b"GIF87a", b"GIF89a"), "PNG": (b"\x89PNG\r\n\x1a\n",)}
+        if (not isinstance(source_data, bytes) or not 0 < len(source_data) <= MAX_SOURCE_BYTES
+                or not source_data.startswith(signatures[source_format])):
+            raise StickerError("表情原件缺失、格式不符或超过 20 MiB")
+        if legacy_digest is not None and (not isinstance(legacy_digest, str) or len(legacy_digest) != 64
+                or any(char not in "0123456789abcdef" for char in legacy_digest)):
+            raise StickerError("表情旧版摘要无效")
+        digest = sha256(data).hexdigest()
+        source_digest = sha256(source_data).hexdigest()
+        destination = self._persist(self.directory, digest + ".gif", data)
+        source_path = self._persist(self.directory / "originals", source_digest + "." + source_format.lower(), source_data)
         return {**information, "digest": digest, "path": str(destination), "bytes": len(data),
-                "source_format": source_format, "note": note}
+                "source_format": source_format, "note": note, "source_digest": source_digest,
+                "source_path": str(source_path), "source_bytes": len(source_data), "legacy_digest": legacy_digest}
 
     def add(self, connection, intent, prepared):
         _identity(intent["account_id"], intent["chat_id"], intent["sender_id"])
@@ -181,19 +207,36 @@ class StickerService:
         data = path.read_bytes()
         if sha256(data).hexdigest() != digest:
             raise StickerError("已保存表情的摘要不一致")
+        source_digest = prepared["source_digest"]
+        source_path = Path(prepared["source_path"])
+        if (source_path != self.directory / "originals" / (source_digest + "." + prepared["source_format"].lower())
+                or source_path.is_symlink() or source_path.parent.is_symlink() or not source_path.is_file()
+                or source_path.stat().st_size != prepared["source_bytes"]
+                or not 0 < prepared["source_bytes"] <= MAX_SOURCE_BYTES
+                or sha256(source_path.read_bytes()).hexdigest() != source_digest):
+            raise StickerError("已保存表情原件的路径或摘要不一致")
         existing = connection.execute("""SELECT * FROM stickers
-            WHERE account_id=? AND chat_id=? AND ((digest=? AND deleted=0) OR native_message_id=?)
-            ORDER BY id LIMIT 1""", (intent["account_id"], intent["chat_id"], digest,
-                                      intent["native_message_id"])).fetchone()
+            WHERE account_id=? AND chat_id=? AND
+              (((digest IN (?,?) OR source_digest=?) AND deleted=0) OR native_message_id=?)
+            ORDER BY CASE WHEN source_digest=? THEN 0 ELSE 1 END,id LIMIT 1""",
+            (intent["account_id"], intent["chat_id"], digest, prepared.get("legacy_digest"),
+             source_digest, intent["native_message_id"], source_digest)).fetchone()
         if existing:
             if existing["deleted"]:
                 raise StickerError("该上传消息对应的条目已删除")
-            return {**dict(existing), "is_duplicate": True}
-        fields = ("digest", "path", "bytes", "width", "height", "frames", "format", "source_format", "note")
+            # A re-upload can supply an original which old versions never kept.
+            # Do not replace that entry's sendable GIF, owner or native message.
+            if existing["source_digest"] is None and existing["source_format"] == prepared["source_format"]:
+                connection.execute("UPDATE stickers SET source_digest=?,source_path=?,source_bytes=? WHERE id=?",
+                    (source_digest, str(source_path), prepared["source_bytes"], existing["id"]))
+            return {**dict(connection.execute("SELECT * FROM stickers WHERE id=?", (existing["id"],)).fetchone()),
+                    "is_duplicate": True}
+        fields = ("digest", "path", "bytes", "width", "height", "frames", "format", "source_format", "note",
+                  "source_digest", "source_path", "source_bytes")
         cursor = connection.execute("""INSERT INTO stickers
             (account_id,chat_id,sender_id,native_message_id,created_at,
-             digest,path,bytes,width,height,frames,format,source_format,note)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             digest,path,bytes,width,height,frames,format,source_format,note,source_digest,source_path,source_bytes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (intent["account_id"], intent["chat_id"], intent["sender_id"], intent["native_message_id"], received_at,
              *(prepared[name] for name in fields)))
         return {**dict(connection.execute("SELECT * FROM stickers WHERE id=?", (cursor.lastrowid,)).fetchone()),

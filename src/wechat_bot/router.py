@@ -7,6 +7,7 @@ import time
 from zxj.service import draw, history_page
 from wordle.game import WordleService, GameError
 from .store import BotStore
+from .stickers import WAIT_SECONDS
 
 ADMIN = {"机器人状态", "暂停群功能", "恢复群功能"}
 COMMAND = re.compile(r"(?:帮助|随机zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是[^\r\n]{0,128}|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
@@ -76,21 +77,24 @@ class Router:
                 if cfg.zxj:
                     commands += ["随机zxj", "我的zxj [页码]"]
                 if cfg.wordle:
-                    commands += ["猜词 [5]", "我猜是 apple（空格可省略）", "猜词棋盘", "猜词战绩", "结束猜词"]
+                    commands += ["猜词 [3~10]（默认 5）", "我猜是 apple（空格可省略）", "猜词棋盘", "猜词战绩", "结束猜词"]
                 if cfg.stickers and self.stickers:
                     commands += ["添加表情包", "取消添加", "随机表情包", "我的表情包 [页码]", "删除表情包 编号"]
                 return reply("请真实 @机器人 后输入：\n" + "\n".join(commands))
             if text == "随机zxj" and cfg.zxj:
                 result = draw(event.sender_id, connection=c, now=datetime.fromtimestamp(event.received_at,UTC))
-                return reply(f"{result['business_date']}：{result['result']}")
+                date = datetime.strptime(result['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')
+                return reply(f"今天（{date}）你的zxj是“{result['result']}”")
             if text.startswith("我的zxj") and cfg.zxj:
                 page = int(text.split()[1]) if " " in text else 1
                 result = history_page(event.sender_id, page=page, connection=c)
-                lines = [f"{v['business_date']}：{v['result']}" for v in result['items']]
+                lines = [f"{datetime.strptime(v['business_date'], '%Y-%m-%d'):%y.%m.%d}：{v['result']}" for v in result['items']]
                 return reply("\n".join(lines + [f"第 {page}/{result['total_pages']} 页，共 {result['total']} 条。", f"下一页：我的zxj {page+1}"] ))
             board = None
             if text.split()[0] == "猜词" and cfg.wordle:
                 length = int(text.split()[1]) if " " in text else 5
+                if not 3 <= length <= 10:
+                    return reply("单词长度需要在 3~10 之间，例如：猜词 7。")
                 # An existing active game is shown without changing its answer.
                 current = self.game.store.load(c,event.chat_id,active_only=True)
                 board = self.game._board(current) if current else self.game.start(event.chat_id,event.sender_id,length,connection=c)
@@ -123,7 +127,7 @@ class Router:
         key = dict(account_id=event.account_id,chat_id=event.chat_id,sender_id=event.sender_id)
         if text == '添加表情包':
             self.stickers.begin_wait(c,**key,received_at=event.received_at)
-            return reply('请在 60 秒内发送一条原生表情。')
+            return reply(f'请在 {WAIT_SECONDS} 秒内发送一条原生表情。')
         if text == '取消添加':
             self.stickers.cancel_wait(c,**key)
             return reply('已取消等待。')
@@ -161,7 +165,7 @@ class Router:
                     try:
                         item = self.stickers.add(c,data['sticker_intent'],prepared)
                         text = f"表情编号 {item['id']}：" + ('已有同一资源。' if item['is_duplicate'] else '添加成功。')
-                        if prepared.get('note'):
+                        if not item['is_duplicate'] and prepared.get('note'):
                             text += prepared['note']
                     except (ValueError, OSError) as error:
                         text = '表情保存校验失败：' + type(error).__name__

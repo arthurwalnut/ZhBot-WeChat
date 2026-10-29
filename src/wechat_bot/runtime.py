@@ -14,6 +14,7 @@ from .gateway import Event, GatewayError, Outgoing
 from .router import Router
 from .store import BotStore
 from .stickers import StickerError, StickerService
+from .sticker_media import PNG_PUBLIC_REASONS
 
 log = logging.getLogger("wechat_bot")
 
@@ -32,7 +33,8 @@ _PUBLIC_MEDIA_REASONS = frozenset({
     "表情包连接已结束", "表情包下载地址无效", "表情包下载地址不受支持",
     "表情包响应超过大小限制", "表情包下载已取消或超时",
     "表情包下载失败或超过支持范围", "表情包内容校验失败或连接已结束",
-})
+    "表情原件缺失、格式不符或超过 20 MiB", "已保存表情原件的路径或摘要不一致",
+}) | PNG_PUBLIC_REASONS
 
 
 @contextmanager
@@ -122,7 +124,9 @@ class Runtime:
                     raise ValueError('上传账号/群已不在当前授权范围')
                 event = replace(event,connection_id=self.gateway.connection_id)
                 resource = self.gateway.fetch_sticker(event)
-                prepared = self.stickers.prepare(resource['data'],source_format=resource['source_format'],note=resource.get('note',''))
+                prepared = self.stickers.prepare(resource['data'],source_format=resource['source_format'],
+                    note=resource.get('note',''),source_data=resource.get('source_data'),
+                    legacy_digest=resource.get('legacy_digest'))
             except Exception as error:
                 reason = str(error) if isinstance(error,(GatewayError,StickerError)) else ''
                 media_error = "表情资源取得或持久保存失败：" + (

@@ -11,7 +11,7 @@ from .render import render_board
 
 def build_parser():
     lengths = ", ".join(map(str, supported_lengths()))
-    parser = argparse.ArgumentParser(description=f"本地多人 Wordle；本地词库支持长度：{lengths}；共用 6 次机会。")
+    parser = argparse.ArgumentParser(description=f"本地多人 Wordle；支持长度：{lengths}；3/4 字母共用 5 次，5/6 字母 6 次，7/8 字母 7 次，9/10 字母 8 次。")
     parser.add_argument("--data-dir", default="runtime", help="数据库和图片目录（默认 runtime）")
     commands = parser.add_subparsers(dest="command", required=True)
     for action in ("start", "guess", "board", "stats", "end"):
@@ -50,7 +50,7 @@ def main(argv=None):
             board = service.current(args.group, args.game)
         else:
             board = service.end(args.group, args.user)
-        print(f"对局 #{board['game_id']} | 群 {board['group_id']} | {board['status']} | {len(board['guesses'])}/6")
+        print(f"对局 #{board['game_id']} | 群 {board['group_id']} | {board['status']} | {len(board['guesses'])}/{board['max_guesses']}")
         labels = {"green": "绿", "yellow": "黄", "gray": "灰"}
         for guess in board["guesses"]:
             colors = " ".join(labels[color] for color in guess["colors"])

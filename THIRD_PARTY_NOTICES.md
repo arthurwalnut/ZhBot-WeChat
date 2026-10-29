@@ -16,6 +16,8 @@ pytest 的解析、终端输出等传递依赖由包管理器安装，约束文�
 
 `characters.json` 和 `words.json` 为本项目显式维护的单字/常用词集合，没有复制第三方词库。棋盘读取 Windows 已安装的 Arial Bold 或 Segoe UI Bold；本仓库不复制、分发字体。找不到系统字体时使用 Pillow 随包默认字体，其许可随 Pillow 发行包保留。
 
+2026-10-30：`words.json` 扩展为 3～10 字母、2348 个项目维护的答案，保留原五字母词库。`ZhBot.exe` 从仓库的 `launcher/Launcher.cs` 使用 Windows 自带 .NET Framework v4 C# 编译器构建，调用已安装的 WinForms；未将 .NET、Python 或 helper DLL 嵌入 EXE。新增 PNG 转换代码使用已有 Pillow，未添加运行依赖或修改固定上游源码。
+
 ## Windows 系统 OCR（2026-10-29）
 
 `src/wechat_reader/ocr.py` 与 `windows_ocr.ps1` 为本项目编写的调用封装，通过 Windows PowerShell 5.1 调用已安装的 `Windows.Media.Ocr.OcrEngine`。仓库不附带 Windows OCR 引擎或识别模型，也未复制第三方 OCR 项目的代码；图像处理复用已有 Pillow，未增加 Python 运行依赖。

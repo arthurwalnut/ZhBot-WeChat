@@ -61,6 +61,13 @@ def supported_lengths():
     return sorted({len(word) for word in answers})
 
 
+def guess_limit(length):
+    """Persist the rule at game creation so later updates do not change a game."""
+    if not isinstance(length, int) or isinstance(length, bool) or not 3 <= length <= 10:
+        raise GameError("单词长度需要是 3–10 的整数。")
+    return min(9, 5 + (length - 3) // 2)
+
+
 class WordleService:
     def __init__(self, db_path, *, answer_picker=None, initialize=True):
         self.store = WordleStore(db_path, initialize=initialize)
@@ -75,7 +82,7 @@ class WordleService:
             "creator_id": game["creator_id"], "length": game["length"],
             "status": game["status"], "winner_id": game["winner_id"],
             "created_at_utc": game["created_at_utc"], "ended_at_utc": game["ended_at_utc"],
-            "max_guesses": 6,
+            "max_guesses": game["max_guesses"],
             "guesses": [
                 {"turn_number": item["turn_number"], "user_id": item["user_id"],
                  "word": item["word"], "created_at_utc": item["created_at_utc"],
@@ -89,6 +96,7 @@ class WordleService:
 
     def start(self, group_id, user_id, length=5, *, connection=None):
         group_id, user_id = _identifier(group_id, "group"), _identifier(user_id, "user")
+        limit = guess_limit(length)
         candidates = tuple(word for word in self.answers if len(word) == length)
         if not candidates:
             raise GameError(f"本地答案词库支持的长度：{', '.join(map(str, supported_lengths()))}。")
@@ -99,7 +107,7 @@ class WordleService:
             answer = self.answer_picker(candidates)
             if answer not in candidates:
                 raise ValueError("answer_picker returned a word outside the answer pool")
-            game_id = self.store.create(connection, group_id, user_id, answer, _now())
+            game_id = self.store.create(connection, group_id, user_id, answer, _now(), limit)
             return self._board(self.store.load(connection, group_id, game_id))
 
     def guess(self, group_id, user_id, word, *, connection=None):
@@ -123,7 +131,7 @@ class WordleService:
             self.store.add_guess(connection, game["id"], turn, user_id, word, timestamp)
             if word == game["answer"]:
                 self.store.finish(connection, game["id"], "won", timestamp, user_id)
-            elif turn == 6:
+            elif turn >= game["max_guesses"]:
                 self.store.finish(connection, game["id"], "lost", timestamp)
             return self._board(self.store.load(connection, group_id, game["id"]))
 

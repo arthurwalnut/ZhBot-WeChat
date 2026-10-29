@@ -1,13 +1,16 @@
 """One combined scenario for explicit uploads, transaction failure and restart."""
 from io import BytesIO
+from hashlib import sha256
 import json
 from pathlib import Path
+import random
 import sqlite3
 
 from PIL import Image
 import pytest
 
 from wechat_bot.stickers import StickerError, StickerService
+from wechat_bot.sticker_media import png_to_gif
 
 
 def test_member_upload_isolation_and_persistent_native_resources(tmp_path, monkeypatch):
@@ -76,7 +79,8 @@ def test_member_upload_isolation_and_persistent_native_resources(tmp_path, monke
     assert service.list(connection, **alice)["total"] == 1
     with connection:
         service.begin_wait(connection, **bob, received_at=300)
-    assert service.claim(connection, **bob, native_message_id="6", received_at=361, message_type="sticker") is None
+    assert service.waiting(connection, **bob, received_at=330)
+    assert service.claim(connection, **bob, native_message_id="6", received_at=331, message_type="sticker") is None
     with connection:
         service.begin_wait(connection, **bob, received_at=400)
         assert service.cancel_wait(connection, **bob)
@@ -104,4 +108,92 @@ def test_member_upload_isolation_and_persistent_native_resources(tmp_path, monke
     assert restarted.random(connection, **scope) is None
     assert restarted.list(connection, **alice)["total"] == 0
     assert path.exists()  # Sending/uncertain outbox references may still need it.
+    connection.close()
+
+
+def test_png_quality_limits_and_original_dedup_migration(tmp_path):
+    # A 256-level image must not take the previous 32-color conversion path.
+    picture = Image.frombytes("L", (256, 1), bytes(range(256))).convert("RGB")
+    png = BytesIO()
+    picture.save(png, format="PNG")
+    original = png.getvalue()
+    payload, note = png_to_gif(original)
+    with Image.open(BytesIO(payload)) as result:
+        assert result.size == picture.size and len(result.getcolors()) == 256
+        assert result.convert("RGB").tobytes() == picture.tobytes()
+
+    transparent = Image.new("RGBA", (2, 1), (255, 0, 0, 0))
+    transparent.putpixel((1, 0), (0, 255, 0, 255))
+    buffer = BytesIO()
+    transparent.save(buffer, format="PNG")
+    converted, _ = png_to_gif(buffer.getvalue())
+    with Image.open(BytesIO(converted)) as result:
+        assert result.convert("RGBA").getpixel((0, 0))[3] == 0
+        assert result.convert("RGBA").getpixel((1, 0)) == (0, 255, 0, 255)
+
+    # Independently exercise dimension and encoded-size limits, preserving
+    # proportional geometry while avoiding an unconditional 32-color fallback.
+    for picture in (Image.new("RGB", (2048, 512), "red"),
+                    Image.frombytes("L", (1024, 1024), random.Random(1).randbytes(1024 * 1024))):
+        buffer = BytesIO()
+        picture.save(buffer, format="PNG")
+        converted, resized_note = png_to_gif(buffer.getvalue())
+        with Image.open(BytesIO(converted)) as result:
+            assert max(result.size) <= 1024 and len(converted) <= 1024 * 1024
+            assert result.size != picture.size and "缩至" in resized_note
+            assert abs(result.width / result.height - picture.width / picture.height) < 0.01
+    animation = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(animation, format="PNG", save_all=True,
+        append_images=[Image.new("RGB", (8, 8), "blue")], duration=[100, 200], loop=0)
+    with pytest.raises(StickerError, match="动态 PNG"):
+        png_to_gif(animation.getvalue())
+    with pytest.raises(StickerError, match="连接已结束"):
+        png_to_gif(original, lambda: False)
+
+    # Start from the exact pre-originals column layout. Migration adds metadata
+    # without replacing a legacy sender, media file, digest or row identifier.
+    service = StickerService(tmp_path)
+    connection = sqlite3.connect(tmp_path / "bot.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE stickers (
+        id INTEGER PRIMARY KEY, account_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL, native_message_id TEXT NOT NULL, created_at REAL NOT NULL,
+        digest TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL,
+        width INTEGER NOT NULL, height INTEGER NOT NULL, frames INTEGER NOT NULL,
+        format TEXT NOT NULL, source_format TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+        deleted INTEGER NOT NULL DEFAULT 0, UNIQUE(account_id,chat_id,native_message_id))""")
+    old_gif = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(old_gif, format="GIF")
+    old_digest = sha256(old_gif.getvalue()).hexdigest()
+    old_path = service.directory / (old_digest + ".gif")
+    old_path.parent.mkdir(parents=True)
+    old_path.write_bytes(old_gif.getvalue())
+    connection.execute("""INSERT INTO stickers VALUES
+        (1,'wxid_robot','123@chatroom','wxid_alice','10',100,?,?,?,8,8,1,'GIF','PNG','old',0)""",
+        (old_digest, str(old_path), len(old_gif.getvalue())))
+    connection.commit()
+    with connection:
+        service.initialize(connection)
+    old = connection.execute("SELECT * FROM stickers WHERE id=1").fetchone()
+    assert old["source_digest"] is None and old["source_path"] is None
+    scope = {"account_id": "wxid_robot", "chat_id": "123@chatroom", "sender_id": "wxid_bob"}
+    prepared = service.prepare(payload, source_format="PNG", source_data=original,
+                               note=note, legacy_digest=old_digest)
+    assert Path(prepared["source_path"]).read_bytes() == original
+    with connection:
+        service.begin_wait(connection, **scope, received_at=200)
+        intent = service.claim(connection, **scope, native_message_id="11", received_at=201, message_type="sticker")
+        duplicate = service.add(connection, intent, prepared)
+    assert duplicate["is_duplicate"] and duplicate["id"] == 1
+    assert duplicate["sender_id"] == "wxid_alice" and duplicate["path"] == str(old_path)
+    assert duplicate["digest"] == old_digest and old_path.read_bytes() == old_gif.getvalue()
+    assert duplicate["source_digest"] == sha256(original).hexdigest()
+    # A later encoder change can produce different GIF bytes. Source identity
+    # still blocks a new entry, without requiring the legacy-digest hint again.
+    prepared.pop("legacy_digest")
+    with connection:
+        service.begin_wait(connection, **scope, received_at=300)
+        intent = service.claim(connection, **scope, native_message_id="12", received_at=301, message_type="sticker")
+        duplicate = service.add(connection, intent, prepared)
+    assert duplicate["is_duplicate"] and connection.execute("SELECT COUNT(*) FROM stickers").fetchone()[0] == 1
     connection.close()

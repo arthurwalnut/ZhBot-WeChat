@@ -382,12 +382,16 @@ class HelperNative:
             kind, width, height, _, _, _ = emoticons._raster_info(payload)
             if len(payload) > emoticons.MAX_EMOTICON_BYTES or max(width, height) > emoticons.MAX_EMOTICON_DIMENSION:
                 raise GatewayError("MEDIA_UNSUPPORTED", "原生 GIF 超过上游 1 MiB/1024 像素发送限制")
-            return {"data": payload, "source_format": kind, "converted": False, "note": ""}
+            return {"data": payload, "source_data": data, "source_format": kind, "converted": False, "note": ""}
         if not data.startswith(b"\x89PNG\r\n\x1a\n"):
             raise GatewayError("MEDIA_UNSUPPORTED", "该原生表情原件格式尚未支持")
-        payload = resources.gif_bytes(data, current)
-        return {"data": payload, "source_format": "PNG", "converted": True,
-                "note": "原件为PNG，已转换为原生表情发送所需GIF"}
+        from ..sticker_media import png_to_gif
+        payload, note = png_to_gif(data, current)
+        # Compatibility with libraries saved before originals were retained:
+        # keep the pinned old encoder solely to recognize their 32-color hash.
+        legacy_digest = hashlib.sha256(resources.gif_bytes(data, current)).hexdigest()
+        return {"data": payload, "source_data": data, "source_format": "PNG", "converted": True,
+                "legacy_digest": legacy_digest, "note": note}
 
     def stop(self):
         with self._lock:

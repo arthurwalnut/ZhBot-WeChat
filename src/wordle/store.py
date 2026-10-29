@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from pathlib import Path
+import re
 import sqlite3
 
 
@@ -23,6 +24,7 @@ class WordleStore:
                     group_id TEXT NOT NULL,
                     creator_id TEXT NOT NULL,
                     length INTEGER NOT NULL CHECK (length BETWEEN 3 AND 10),
+                    max_guesses INTEGER NOT NULL DEFAULT 6 CHECK (max_guesses BETWEEN 1 AND 9),
                     answer TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('active','won','lost','ended')),
                     winner_id TEXT,
@@ -35,7 +37,7 @@ class WordleStore:
             """
                 CREATE TABLE IF NOT EXISTS guesses (
                     game_id INTEGER NOT NULL REFERENCES games(id),
-                    turn_number INTEGER NOT NULL CHECK (turn_number BETWEEN 1 AND 6),
+                    turn_number INTEGER NOT NULL CHECK (turn_number BETWEEN 1 AND 9),
                     user_id TEXT NOT NULL,
                     word TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL,
@@ -45,6 +47,24 @@ class WordleStore:
         )
         for statement in statements:
             connection.execute(statement)
+        # The caller owns this transaction. Legacy games keep their original
+        # six-turn rule; pending outbox board snapshots are not rewritten.
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(games)")}
+        if "max_guesses" not in columns:
+            connection.execute("ALTER TABLE games ADD COLUMN max_guesses INTEGER NOT NULL "
+                               "DEFAULT 6 CHECK (max_guesses BETWEEN 1 AND 9)")
+        old_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='guesses'"
+        ).fetchone()[0]
+        if re.search(r"turn_number\s+BETWEEN\s+1\s+AND\s+6", old_sql, re.IGNORECASE):
+            connection.execute("""CREATE TABLE guesses_expanded (
+                game_id INTEGER NOT NULL REFERENCES games(id),
+                turn_number INTEGER NOT NULL CHECK (turn_number BETWEEN 1 AND 9),
+                user_id TEXT NOT NULL, word TEXT NOT NULL, created_at_utc TEXT NOT NULL,
+                PRIMARY KEY (game_id, turn_number), UNIQUE (game_id, word))""")
+            connection.execute("INSERT INTO guesses_expanded SELECT * FROM guesses")
+            connection.execute("DROP TABLE guesses")
+            connection.execute("ALTER TABLE guesses_expanded RENAME TO guesses")
 
     @contextmanager
     def transaction(self, connection=None):
@@ -91,11 +111,11 @@ class WordleStore:
         )]
         return game
 
-    def create(self, connection, group_id, user_id, answer, timestamp):
+    def create(self, connection, group_id, user_id, answer, timestamp, max_guesses):
         cursor = connection.execute(
-            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc) "
-            "VALUES (?, ?, ?, ?, 'active', ?)",
-            (group_id, user_id, len(answer), answer, timestamp),
+            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc, max_guesses) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
+            (group_id, user_id, len(answer), answer, timestamp, max_guesses),
         )
         return cursor.lastrowid
 

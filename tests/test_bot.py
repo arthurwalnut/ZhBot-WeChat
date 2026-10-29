@@ -62,6 +62,10 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     assert len(draws) == 2
     replies = rows(runtime, "outbox")
     assert json.loads(replies[0]["payload"])["text"] == json.loads(replies[2]["payload"])["text"]
+    saved = next(item for item in draws if item['user_id'] == 'wxid_alice')
+    from datetime import datetime
+    date = datetime.strptime(saved['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')
+    assert json.loads(replies[0]['payload'])['text'] == f"今天（{date}）你的zxj是“{saved['result']}”"
     for value in (
         event(4, mentioned_ids=()),  # Visible @ text has no native mention.
         event(5, chat_id="other@chatroom"),
@@ -87,6 +91,8 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     assert len(rows(runtime, "draws")) == 3
     process(runtime, event(17, text=''))
     assert '帮助' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
+    process(runtime, event(18, text='我的zxj'))
+    assert f"{date}：{saved['result']}" in json.loads(rows(runtime,'outbox')[-1]['payload'])['text']
     assert all(item["chat_id"] in {"123@chatroom", "wxid_owner"} for item in rows(runtime, "outbox"))
 
 
@@ -183,9 +189,10 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     gif = BytesIO()
     Image.new("RGB", (8, 8), "red").save(gif, format="GIF")
     process(runtime, event(7, "添加表情包"))
+    assert '30 秒' in json.loads(rows(runtime, 'outbox')[-1]['payload'])['text']
     runtime.receive(event(8, message_type="sticker", text="", mentioned_ids=()))
     # Simulate downtime longer than the ordinary command TTL, preserving the
-    # already accepted upload's original arrival within its 60-second wait.
+    # already accepted upload's original arrival within its 30-second wait.
     with runtime.store.transaction() as connection:
         accepted = connection.execute("SELECT id,payload FROM inbox WHERE native_message_id='8'").fetchone()
         payload = json.loads(accepted['payload'])
