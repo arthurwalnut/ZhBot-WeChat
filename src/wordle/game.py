@@ -69,9 +69,10 @@ def guess_limit(length):
 
 
 class WordleService:
-    def __init__(self, db_path, *, answer_picker=None, initialize=True):
+    def __init__(self, db_path, *, answer_picker=None, initialize=True, dictionary_provider=None):
         self.store = WordleStore(db_path, initialize=initialize)
         self.answers, self.allowed = _load_words()
+        self.dictionary_provider = dictionary_provider
         # Tests may choose a fixed answer; the normal CLI exposes no answer override.
         self.answer_picker = answer_picker or secrets.choice
 
@@ -97,17 +98,20 @@ class WordleService:
     def start(self, group_id, user_id, length=5, *, connection=None):
         group_id, user_id = _identifier(group_id, "group"), _identifier(user_id, "user")
         limit = guess_limit(length)
-        candidates = tuple(word for word in self.answers if len(word) == length)
-        if not candidates:
-            raise GameError(f"本地答案词库支持的长度：{', '.join(map(str, supported_lengths()))}。")
         with self.store.transaction(connection) as connection:
             existing = self.store.load(connection, group_id, active_only=True)
             if existing:
                 raise GameError(f"该群已有进行中的对局 #{existing['id']}；请继续猜测或由开局者结束。")
+            answers, allowed = (self.dictionary_provider(connection) if self.dictionary_provider
+                                else (self.answers, self.allowed))
+            candidates = tuple(word for word in answers if len(word) == length)
+            if not candidates:
+                raise GameError(f"{length} 字母答案词库为空，请先在后台添加单词。")
             answer = self.answer_picker(candidates)
             if answer not in candidates:
                 raise ValueError("answer_picker returned a word outside the answer pool")
-            game_id = self.store.create(connection, group_id, user_id, answer, _now(), limit)
+            snapshot = {word for word in allowed if len(word) == length} | set(candidates)
+            game_id = self.store.create(connection, group_id, user_id, answer, _now(), limit, snapshot)
             return self._board(self.store.load(connection, group_id, game_id))
 
     def guess(self, group_id, user_id, word, *, connection=None):
@@ -123,7 +127,9 @@ class WordleService:
             word = word.lower()
             if len(word) != game["length"]:
                 raise GameError(f"本局需要 {game['length']} 个字母，不消耗机会。")
-            if word not in self.allowed:
+            snapshot = game.get("allowed_words_json")
+            allowed = set(json.loads(snapshot)) if snapshot is not None else self.allowed | {game["answer"]}
+            if word not in allowed:
                 raise GameError("本地词库未收录该词，不消耗机会。")
             if any(item["word"] == word for item in game["guesses"]):
                 raise GameError("该词已猜过，不消耗机会。")

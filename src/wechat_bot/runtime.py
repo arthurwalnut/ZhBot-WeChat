@@ -152,6 +152,15 @@ class Runtime:
         with self.delivery_lock:
             return self._send_one(now=now)
 
+    @staticmethod
+    def _library_item_active(connection, row, payload):
+        # Older/non-library replies can have a file path without a sticker ID.
+        if payload.get('kind') != 'sticker' or payload.get('sticker_id') is None:
+            return True
+        return connection.execute("""SELECT 1 FROM stickers WHERE id=?
+            AND account_id=? AND chat_id=? AND deleted=0""",
+            (payload['sticker_id'], row['account_id'], row['chat_id'])).fetchone() is not None
+
     def _send_one(self, *, now=None):
         now = time.time() if now is None else now
         with self.store.transaction() as c:
@@ -168,6 +177,10 @@ class Runtime:
                 c.execute("UPDATE outbox SET state='expired',detail='expiry or binding changed' WHERE id=?",(row['id'],))
                 return True
             payload = json.loads(row['payload'])
+            if not self._library_item_active(c, row, payload):
+                c.execute("UPDATE outbox SET state='expired',detail='sticker deleted or unavailable' WHERE id=?",
+                          (row['id'],))
+                return True
             c.execute("UPDATE outbox SET state='sending',attempts=attempts+1 WHERE id=?",(row['id'],))
         # Rendering/native calls do not hold the business write transaction.
         try:
@@ -189,9 +202,15 @@ class Runtime:
         state = result.status
         if state == 'failed' and result.retryable and row['attempts']+1 < self.config.max_send_attempts:
             state = 'pending'
+        detail = result.detail
         with self.store.transaction() as c:
+            # Local administration runs in a different process. It may delete
+            # this item after the sending claim but before a retryable failure.
+            # Preserve accepted/uncertain evidence; only suppress a new retry.
+            if state == 'pending' and not self._library_item_active(c, row, payload):
+                state, detail = 'expired', 'sticker deleted before retry'
             c.execute("UPDATE outbox SET state=?,detail=?,next_attempt=? WHERE id=?",
-                      (state,result.detail,now+2**(row['attempts']+1),row['id']))
+                      (state,detail,now+2**(row['attempts']+1),row['id']))
         log.info("outbox=%s state=%s",row['id'],state)
         return True
 

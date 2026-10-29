@@ -8,6 +8,7 @@ from zxj.service import draw, history_page
 from wordle.game import WordleService, GameError
 from .store import BotStore
 from .stickers import WAIT_SECONDS
+from . import dictionaries
 
 ADMIN = {"机器人状态", "暂停群功能", "恢复群功能"}
 COMMAND = re.compile(r"(?:帮助|随机zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是[^\r\n]{0,128}|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
@@ -22,7 +23,7 @@ def command_text(event):
 class Router:
     def __init__(self, config, store, stickers=None):
         self.config, self.store, self.stickers = config, store, stickers
-        self.game = WordleService(store.path, initialize=False)
+        self.game = WordleService(store.path, initialize=False, dictionary_provider=dictionaries.words)
 
     def in_scope(self, event):
         cfg = self.config
@@ -82,7 +83,8 @@ class Router:
                     commands += ["添加表情包", "取消添加", "随机表情包", "我的表情包 [页码]", "删除表情包 编号"]
                 return reply("请真实 @机器人 后输入：\n" + "\n".join(commands))
             if text == "随机zxj" and cfg.zxj:
-                result = draw(event.sender_id, connection=c, now=datetime.fromtimestamp(event.received_at,UTC))
+                result = draw(event.sender_id, connection=c, now=datetime.fromtimestamp(event.received_at,UTC),
+                              characters=dictionaries.characters(c))
                 date = datetime.strptime(result['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')
                 return reply(f"今天（{date}）\n你的zxj是“{result['result']}”")
             if text.startswith("我的zxj") and cfg.zxj:
@@ -139,10 +141,7 @@ class Router:
             result = self.stickers.list(c,**key,page=page)
             return reply('编号：'+', '.join(str(v['id']) for v in result['items'])+f"；第 {page}/{result['pages']} 页，共 {result['total']} 条。")
         if text.startswith('删除表情包 '):
-            item = self.stickers.delete(c,**key,sticker_id=int(text.split()[1]),owner_id=self.config.owner_id)
-            for row in c.execute("SELECT id,payload FROM outbox WHERE state='pending' AND chat_id=?",(event.chat_id,)).fetchall():
-                if json.loads(row['payload']).get('sticker_id') == item['id']:
-                    c.execute("UPDATE outbox SET state='expired',detail='sticker deleted' WHERE id=?",(row['id'],))
+            self.stickers.delete_with_pending(c,**key,sticker_id=int(text.split()[1]),owner_id=self.config.owner_id)
             return reply('已删除该条目并取消尚未开始发送的待发项。')
         return []
 

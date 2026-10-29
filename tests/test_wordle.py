@@ -117,3 +117,59 @@ def test_legacy_migration_and_variable_length_relay(tmp_path):
     # An already generated board remains renderable without new database fields.
     legacy.pop('max_guesses')
     render_board(legacy, tmp_path / 'legacy-outbox.png')
+
+
+def test_admin_word_edits_apply_to_new_games_and_preserve_active_dictionary(tmp_path):
+    from wechat_bot.dictionaries import initialize, words, change_words
+
+    path = tmp_path / 'bot.sqlite3'
+    service = WordleService(path, answer_picker=lambda candidates: 'apple', dictionary_provider=words)
+    with service.store.transaction() as connection:
+        initialize(connection)
+    service.start('existing', 'alice')
+    # A live service object observes edits at the next new-game transaction.
+    with service.store.transaction() as connection:
+        baseline = words(connection)
+        with pytest.raises(ValueError):
+            change_words(connection, add=['valid', 'bad!'], remove=['apple'])
+        assert words(connection) == baseline
+        with pytest.raises(ValueError):
+            change_words(connection, add=['apple'], remove=['APPLE'])
+        assert words(connection) == baseline
+        change_words(connection, add=['Zyzzy'], remove=['apple', 'alley'])
+        assert 'zyzzy' in words(connection)[0]
+    service.answer_picker = lambda candidates: 'zyzzy'
+    service.start('new', 'bob')
+    with pytest.raises(GameError, match='未收录'):
+        service.guess('new', 'bob', 'apple')
+    with pytest.raises(GameError, match='未收录'):
+        service.guess('existing', 'bob', 'zyzzy')
+    # Deleted answer and an old allowed guess both remain valid in the old game.
+    service.guess('existing', 'bob', 'alley')
+    service = WordleService(path, dictionary_provider=words)
+    assert service.guess('existing', 'carol', 'apple')['winner_id'] == 'carol'
+    assert service.guess('new', 'bob', 'zyzzy')['winner_id'] == 'bob'
+    with service.store.transaction() as connection:
+        initialize(connection)
+        assert 'apple' not in words(connection)[1]  # No reseeding after restart.
+        change_words(connection, add=['apple'], remove=['zyzzy'])
+        connection.rollback()
+        assert 'apple' not in words(connection)[1] and 'zyzzy' in words(connection)[1]
+
+    # Legacy active games get the original packaged vocabulary before owner edits.
+    legacy = tmp_path / 'legacy-owner.sqlite3'
+    with sqlite3.connect(legacy) as connection:
+        connection.executescript("""
+            CREATE TABLE games (
+                id INTEGER PRIMARY KEY, group_id TEXT NOT NULL, creator_id TEXT NOT NULL,
+                length INTEGER NOT NULL, answer TEXT NOT NULL, status TEXT NOT NULL,
+                winner_id TEXT, created_at_utc TEXT NOT NULL, ended_at_utc TEXT,
+                max_guesses INTEGER NOT NULL DEFAULT 6);
+            INSERT INTO games VALUES (1,'legacy','alice',5,'apple','active',NULL,'earlier',NULL,6);
+        """)
+    service = WordleService(legacy, dictionary_provider=words)
+    with service.store.transaction() as connection:
+        initialize(connection)
+        change_words(connection, remove=['apple', 'alley'])
+    service.guess('legacy', 'bob', 'alley')
+    assert service.guess('legacy', 'carol', 'apple')['winner_id'] == 'carol'

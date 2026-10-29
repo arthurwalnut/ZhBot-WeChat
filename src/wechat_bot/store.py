@@ -8,6 +8,7 @@ import time
 
 from zxj.service import initialize_schema
 from wordle.store import WordleStore
+from . import dictionaries
 
 
 class BotStore:
@@ -23,6 +24,7 @@ class BotStore:
             self.set_setting(c, "account_id", account_id)
             initialize_schema(c)
             WordleStore.initialize_schema(c)
+            dictionaries.initialize(c)
             c.execute("""CREATE TABLE IF NOT EXISTS inbox (
                 id INTEGER PRIMARY KEY, namespace TEXT NOT NULL, account_id TEXT NOT NULL,
                 chat_id TEXT NOT NULL, native_message_id TEXT NOT NULL, received_at REAL NOT NULL,

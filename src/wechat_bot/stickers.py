@@ -1,18 +1,20 @@
 """Explicit member uploads and a persistent native-GIF library.
 
 Database methods use the caller's transaction and never commit. Resource bytes
-are obtained by the gateway only after a wait is claimed; this module never
-scans WeChat caches or downloads arbitrary user-supplied URLs.
+come from explicitly matched native uploads or owner-selected local files;
+this module never scans WeChat caches or downloads arbitrary URLs.
 """
 from __future__ import annotations
 
 from hashlib import sha256
 from io import BytesIO
+import json
 import math
 import os
 from pathlib import Path
 import secrets
 import tempfile
+import time
 import uuid
 import warnings
 
@@ -94,7 +96,8 @@ class StickerService:
             ON stickers(account_id, chat_id, digest) WHERE deleted = 0""")
         # Additive migration: existing GIF files, ownership and rows stay intact.
         columns = {row[1] for row in connection.execute("PRAGMA table_info(stickers)")}
-        for name, kind in (("source_digest", "TEXT"), ("source_path", "TEXT"), ("source_bytes", "INTEGER")):
+        for name, kind in (("source_digest", "TEXT"), ("source_path", "TEXT"), ("source_bytes", "INTEGER"),
+                           ("origin", "TEXT NOT NULL DEFAULT 'wechat'")):
             if name not in columns:
                 connection.execute(f"ALTER TABLE stickers ADD COLUMN {name} {kind}")
         connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS unique_active_sticker_source
@@ -205,10 +208,28 @@ class StickerService:
         return self._persist(self.directory / "unprocessed", digest + ".bin", data)
 
     def add(self, connection, intent, prepared):
-        _identity(intent["account_id"], intent["chat_id"], intent["sender_id"])
         received_at = _timestamp(intent["received_at"])
         if not intent["wait_started_at"] < received_at <= intent["wait_expires_at"]:
             raise StickerError("表情首次到达时已超出上传等待")
+        return self._add(connection, account_id=intent["account_id"], chat_id=intent["chat_id"],
+                         sender_id=intent["sender_id"], source_key=intent["native_message_id"],
+                         created_at=received_at, origin="wechat", prepared=prepared)
+
+    def add_local(self, connection, *, account_id, chat_id, sender_id, prepared):
+        """Import a local file under the configured owner's real account ID.
+
+        The legacy source-key column is NOT a WeChat message ID for these rows:
+        origin='local' and its explicit local: prefix distinguish manual imports.
+        No upload wait or synthetic inbox event is created.
+        """
+        return self._add(connection, account_id=account_id, chat_id=chat_id, sender_id=sender_id,
+                         source_key="local:" + uuid.uuid4().hex, created_at=time.time(),
+                         origin="local", prepared=prepared)
+
+    def _add(self, connection, *, account_id, chat_id, sender_id, source_key, created_at, origin, prepared):
+        _identity(account_id, chat_id, sender_id)
+        if not isinstance(source_key, str) or not source_key:
+            raise StickerError("表情入库需要来源记录")
         digest = prepared["digest"]
         path = Path(prepared["path"])
         if path != self.directory / (digest + ".gif") or path.is_symlink() or not path.is_file():
@@ -232,8 +253,8 @@ class StickerService:
             WHERE account_id=? AND chat_id=? AND
               (((digest IN (?,?) OR source_digest=?) AND deleted=0) OR native_message_id=?)
             ORDER BY CASE WHEN source_digest=? THEN 0 ELSE 1 END,id LIMIT 1""",
-            (intent["account_id"], intent["chat_id"], digest, prepared.get("legacy_digest"),
-             source_digest, intent["native_message_id"], source_digest)).fetchone()
+            (account_id, chat_id, digest, prepared.get("legacy_digest"),
+             source_digest, source_key, source_digest)).fetchone()
         if existing:
             if existing["deleted"]:
                 raise StickerError("该上传消息对应的条目已删除")
@@ -248,10 +269,10 @@ class StickerService:
                   "source_digest", "source_path", "source_bytes")
         cursor = connection.execute("""INSERT INTO stickers
             (account_id,chat_id,sender_id,native_message_id,created_at,
-             digest,path,bytes,width,height,frames,format,source_format,note,source_digest,source_path,source_bytes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (intent["account_id"], intent["chat_id"], intent["sender_id"], intent["native_message_id"], received_at,
-             *(prepared[name] for name in fields)))
+             digest,path,bytes,width,height,frames,format,source_format,note,source_digest,source_path,source_bytes,origin)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (account_id, chat_id, sender_id, source_key, created_at,
+             *(prepared[name] for name in fields), origin))
         return {**dict(connection.execute("SELECT * FROM stickers WHERE id=?", (cursor.lastrowid,)).fetchone()),
                 "is_duplicate": False}
 
@@ -290,3 +311,21 @@ class StickerService:
             raise StickerError("只有添加者或主人可删除这条表情")
         connection.execute("UPDATE stickers SET deleted=1 WHERE id=?", (sticker_id,))
         return dict(row)
+
+    def delete_with_pending(self, connection, *, account_id, chat_id, sender_id, sticker_id, owner_id=""):
+        """Hide the item and cancel its unclaimed replies in the caller's transaction.
+
+        A runtime claims a send by setting state='sending' in its own write
+        transaction. Such sends may finish; files remain available to them.
+        Standalone StickerService users need not create an outbox table.
+        """
+        item = self.delete(connection, account_id=account_id, chat_id=chat_id,
+                           sender_id=sender_id, sticker_id=sticker_id, owner_id=owner_id)
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox'").fetchone():
+            for row in connection.execute("""SELECT id,payload FROM outbox
+                    WHERE account_id=? AND chat_id=? AND state='pending'""", (account_id, chat_id)).fetchall():
+                payload = json.loads(row["payload"])
+                if isinstance(payload, dict) and payload.get("sticker_id") == item["id"]:
+                    connection.execute("UPDATE outbox SET state='expired',detail='sticker deleted' WHERE id=?",
+                                       (row["id"],))
+        return item

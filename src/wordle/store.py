@@ -1,6 +1,8 @@
 """SQLite persistence. Game rules belong in game.py."""
 
 from contextlib import contextmanager
+from importlib.resources import files
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -25,6 +27,7 @@ class WordleStore:
                     creator_id TEXT NOT NULL,
                     length INTEGER NOT NULL CHECK (length BETWEEN 3 AND 10),
                     max_guesses INTEGER NOT NULL DEFAULT 6 CHECK (max_guesses BETWEEN 1 AND 9),
+                    allowed_words_json TEXT,
                     answer TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('active','won','lost','ended')),
                     winner_id TEXT,
@@ -53,6 +56,17 @@ class WordleStore:
         if "max_guesses" not in columns:
             connection.execute("ALTER TABLE games ADD COLUMN max_guesses INTEGER NOT NULL "
                                "DEFAULT 6 CHECK (max_guesses BETWEEN 1 AND 9)")
+        if "allowed_words_json" not in columns:
+            connection.execute("ALTER TABLE games ADD COLUMN allowed_words_json TEXT")
+        legacy = connection.execute("SELECT id,length,answer FROM games "
+                                    "WHERE status='active' AND allowed_words_json IS NULL").fetchall()
+        if legacy:
+            defaults = json.loads(files("wordle").joinpath("words.json").read_text(encoding="utf-8"))
+            allowed = set(defaults["answers"]) | set(defaults["allowed_guesses"])
+            for identifier, length, answer in legacy:
+                snapshot = sorted({word for word in allowed if len(word) == length} | {answer})
+                connection.execute("UPDATE games SET allowed_words_json=? WHERE id=?",
+                                   (json.dumps(snapshot), identifier))
         old_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='guesses'"
         ).fetchone()[0]
@@ -111,11 +125,11 @@ class WordleStore:
         )]
         return game
 
-    def create(self, connection, group_id, user_id, answer, timestamp, max_guesses):
+    def create(self, connection, group_id, user_id, answer, timestamp, max_guesses, allowed_words):
         cursor = connection.execute(
-            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc, max_guesses) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
-            (group_id, user_id, len(answer), answer, timestamp, max_guesses),
+            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc, max_guesses, allowed_words_json) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+            (group_id, user_id, len(answer), answer, timestamp, max_guesses, json.dumps(sorted(allowed_words))),
         )
         return cursor.lastrowid
 

@@ -68,7 +68,7 @@ def _validate_user(user_id: str) -> None:
 
 
 def draw(user_id: str, db_path: str | Path | None = None, now: datetime | None = None,
-         *, connection: sqlite3.Connection | None = None) -> dict:
+         *, connection: sqlite3.Connection | None = None, characters: dict | None = None) -> dict:
     """Return the saved daily draw, with ``is_first`` for this request.
 
     ``now`` is an aware datetime for controlled tests; the CLI always uses the
@@ -90,7 +90,11 @@ def draw(user_id: str, db_path: str | Path | None = None, now: datetime | None =
         if existing is not None:
             return {**dict(existing), "is_first": False}
 
-        groups = _characters()
+        groups = _characters() if characters is None else characters
+        if not isinstance(groups, dict) or any(not isinstance(groups.get(initial), (tuple, list))
+                or not groups[initial] or any(not isinstance(char, str) or len(char) != 1
+                for char in groups[initial]) for initial in ("z", "x", "j")):
+            raise ValueError("字库需要非空的 z、x、j 单字列表")
         record = {
             "user_id": user_id,
             "business_date": business_date,

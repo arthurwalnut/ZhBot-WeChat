@@ -80,6 +80,12 @@ def start_lock(config):
 def control(action):
     config_path = ROOT / "runtime" / "config.bot.toml"
     config = load_config(config_path)
+    if action == "admin":
+        from wechat_bot.admin import AdminService
+        payload = sys.stdin.read(1_048_577)
+        if len(payload) > 1_048_576:
+            raise ValueError("管理请求超过大小限制")
+        return AdminService(config).execute(json.loads(payload.lstrip('\ufeff')))
     if action == "status":
         return status(config)
     if action == "stop":
@@ -144,11 +150,11 @@ def start(config, python, config_path):
 def main():
     try:
         if len(sys.argv) != 2:
-            raise ValueError("Expected start, stop, status or check")
+            raise ValueError("Expected start, stop, status, check or admin")
         print(json.dumps(control(sys.argv[1]), ensure_ascii=False), flush=True)
         return 0
     except Exception as error:
-        print(json.dumps({"state": "ERROR", "error": str(error), "version": __version__}, ensure_ascii=False), flush=True)
+        print(json.dumps({"ok": False, "state": "ERROR", "error": str(error), "version": __version__}, ensure_ascii=False), flush=True)
         return 1
 
 

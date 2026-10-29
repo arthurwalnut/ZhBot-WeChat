@@ -1,6 +1,6 @@
-# Astra WeChat Lab v0.2.2
+# Astra WeChat Lab v0.2.3
 
-`v0.2.1` 标签保留上一版快照；`v0.2.2` 包含下述新回复格式、多长度 Wordle、扩展表情保存和固定 EXE 入口。
+`v0.2.3` 增加 EXE 本机管理后台、持久字库/词库编辑、成员记录查询和表情管理；保留 `v0.2.2` 的回复格式、多长度 Wordle、扩展表情保存和固定入口。
 
 2026-10-30：本轮受影响的 8 项检查通过，覆盖新规则、旧库迁移与回滚、PNG 转换和群路由。3/10 字母棋盘已检查版面；微信现已更新为 4.1.15.56，当前构建与原版 4.1.15.13 的真机结果分开记录。
 
@@ -72,6 +72,20 @@ if ($OwnerAccount) {
 ## 启动、状态与停止
 
 本机日常测试：先打开微信并登录已绑定机器人账号，再双击项目根目录的 **`ZhBot.exe`**。入口读取旁边项目中的最新代码、`.venv` 与 `runtime/config.bot.toml`；更新项目后继续使用同一个入口。它是项目启动器，需要这些目录随项目保留。窗口提供运行状态及正常停止操作，关闭启动器窗口后机器人继续后台运行。
+
+当前版本增加本机管理后台，仍使用上述 `ZhBot.exe` 入口。窗口包含运行概览、zxj 记录、Wordle 战绩和表情库，可按已配置群与已观察成员筛选。运行状态每 4 秒刷新；业务记录通过“刷新数据”更新。管理界面直接调用本机 Python 和 SQLite，无网络监听端口；拥有该 Windows 用户和项目目录访问权限的人可以操作。
+
+| 管理页面 | 操作与生效规则 |
+| --- | --- |
+| zxj 记录 | 查看成员历史；“编辑 z / x / j 字库”保存三组单字，空格或换行分隔；每组至少一个字，不接受组内重复。保存后用于后续新抽取，已有每日结果保留。字的拼音归组由拥有者维护 |
+| Wordle 战绩 | 查看已猜中对局的成员、单词、时间和猜测次数；“管理 Wordle 词库”可按长度/文本搜索，添加 3～10 字母单词或删除选中词。新增词同时进入答案和可猜词库，删除同时移出两者；进行中对局继续使用开局词库快照 |
+| 表情库 | 查看上传者、来源、时间、格式及预览；“从本机添加”选择目标群和图片/GIF，归属配置主人（未配置主人时归属机器人账号），标记为本机导入；“删除选中表情”移出该群随机池并取消尚未开始发送的待发项 |
+
+**表情池按群共用**：同群 A 上传的表情和 B 上传的表情，A、B 都可以抽到；群之间隔离。成员筛选只影响管理页面显示，不改变随机抽取范围。本机导入与微信上传共用资源校验、转换和摘要查重。默认预览发送 GIF，也可切换原件；Windows 内置预览不支持的原件格式会显示提示。删除保留原件和发送文件，已开始的原生发送可能完成。
+
+zxj 每日结果按成员保存，旧记录没有抽取发生群字段；选择群时展示该群已观察成员的全局历史。成员名称来自接收事件，缺少名称时显示真实 ID。管理页面只展示已猜中的 Wordle 答案，未结束对局不列出答案。
+
+字库和词库保存在 `runtime/bot.sqlite3` 的 `zxj_characters`、`wordle_words` 表中，随数据库保留；源码 JSON 仅作首次初始化种子。词库编辑后无需重启机器人。此次升级已先备份数据库至 `runtime/backups/bot-before-admin-20261030-013927.sqlite3`。本机管理修改不向微信群发送消息。
 
 启动时仍核验真实账号和微信构建，按已绑定账号寻找重启后的新 PID。扫码或手机确认需本人完成。已运行时显示当前状态；构建不支持或账号不匹配时显示失败原因。源码位于 `launcher/`，重新构建命令为 `powershell -ExecutionPolicy Bypass -File .\scripts\build_launcher.ps1`。
 
@@ -163,9 +177,12 @@ outbox 状态为 `pending / sending / accepted / failed / uncertain / expired`�
 
 调用关系：`ZhBot.exe → launcher/control.py → .venv Python → wechat_bot.__main__ → Runtime → helper_native 接收 → Router → zxj / Wordle / stickers → SQLite outbox → 渲染与原生发送`。命令行与 EXE 调用相同运行入口。helper 的默认应用入口与插件管理器不启动；防撤回、朋友圈、图库和自动加好友插件不进入运行链。
 
+本机管理调用：`ZhBot.exe → launcher/control.py admin（UTF-8 JSON 标准输入）→ AdminService → dictionaries / StickerService / SQLite`。管理与机器人共用事务数据库；Wordle 开局词库另存于 `games.allowed_words_json`，本机表情来源另存于 `stickers.origin`。
+
 | 文件 | 职责 |
 | --- | --- |
 | `ZhBot.exe`、`launcher/`、`scripts/build_launcher.ps1` | 固定 Windows 入口、启动/状态/停止控制及本机构建；调用项目现有 Python 环境 |
+| `src/wechat_bot/admin.py`、`dictionaries.py` | 本机管理查询、字库和词库编辑、表情导入删除；数据库初始化种子及输入校验 |
 | `src/wechat_bot/__main__.py`、`config.py` | 本机命令、绑定、配置校验与状态读取 |
 | `src/wechat_bot/adapters/helper_native.py`、`gateway.py` | 固定依赖/客户端指纹检查、账号连接、实际消息转换、文本/真实 @/PNG/原生表情接口 |
 | `src/wechat_bot/runtime.py` | 单实例、接收持久化、业务循环、发送队列、重连和正常退出 |
