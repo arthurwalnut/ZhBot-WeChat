@@ -170,15 +170,18 @@ class StickerService:
     def prepare(self, data: bytes, *, source_format="GIF", note="", source_data=None, legacy_digest=None):
         """Validate and atomically persist bytes before opening the business transaction."""
         information = _gif_info(data)
-        if source_format not in ("GIF", "PNG"):
-            raise StickerError("当前仅接受 GIF 原件或已明确说明的 PNG 转换")
+        if source_format not in ("GIF", "PNG", "JPEG", "WEBP", "BMP"):
+            raise StickerError("表情原件格式尚未支持")
         if not isinstance(note, str) or len(note) > 500:
             raise StickerError("表情转换说明无效")
         if source_data is None and source_format == "GIF":
             source_data = data
-        signatures = {"GIF": (b"GIF87a", b"GIF89a"), "PNG": (b"\x89PNG\r\n\x1a\n",)}
+        signatures = {"GIF": (b"GIF87a", b"GIF89a"), "PNG": (b"\x89PNG\r\n\x1a\n",),
+                      "JPEG": (b"\xff\xd8\xff",), "WEBP": (b"RIFF",), "BMP": (b"BM",)}
         if (not isinstance(source_data, bytes) or not 0 < len(source_data) <= MAX_SOURCE_BYTES
                 or not source_data.startswith(signatures[source_format])):
+            raise StickerError("表情原件缺失、格式不符或超过 20 MiB")
+        if source_format == "WEBP" and source_data[8:12] != b"WEBP":
             raise StickerError("表情原件缺失、格式不符或超过 20 MiB")
         if legacy_digest is not None and (not isinstance(legacy_digest, str) or len(legacy_digest) != 64
                 or any(char not in "0123456789abcdef" for char in legacy_digest)):
@@ -190,6 +193,16 @@ class StickerService:
         return {**information, "digest": digest, "path": str(destination), "bytes": len(data),
                 "source_format": source_format, "note": note, "source_digest": source_digest,
                 "source_path": str(source_path), "source_bytes": len(source_data), "legacy_digest": legacy_digest}
+
+    def archive_failed_source(self, data):
+        """Keep a fully downloaded, MD5-checked upload for local diagnosis only.
+
+        This creates no library entry and is never selected for sending.
+        """
+        if not isinstance(data, bytes) or not 0 < len(data) <= MAX_SOURCE_BYTES:
+            raise StickerError("表情原件缺失、格式不符或超过 20 MiB")
+        digest = sha256(data).hexdigest()
+        return self._persist(self.directory / "unprocessed", digest + ".bin", data)
 
     def add(self, connection, intent, prepared):
         _identity(intent["account_id"], intent["chat_id"], intent["sender_id"])

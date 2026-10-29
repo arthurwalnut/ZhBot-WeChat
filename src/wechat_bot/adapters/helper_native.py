@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import importlib.util
 import json
 import re
@@ -19,6 +20,20 @@ BRIDGES = {
     "native/build/selftest_bridge.dll": "3c313cafc5ad7c9b7689359fa25e1f6ffb8816169e8ce5e4c2c01f1da338b353",
 }
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.@-]{1,127}\Z")
+
+
+def _media_diagnostic(data):
+    """Small format evidence, without CDN parameters, XML or chat content."""
+    from PIL import Image
+    result = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+              "header_hex": data[:12].hex(), "format": "UNKNOWN"}
+    try:
+        with Image.open(BytesIO(data)) as image:
+            result.update(format=image.format, width=image.width, height=image.height)
+    except Exception:
+        if data.startswith(b"wxgf"):
+            result["format"] = "WXGF"
+    return result
 
 
 def verify_dependency(helper_root):
@@ -374,24 +389,32 @@ class HelperNative:
         except resources.StickerError as error:
             # Upstream's resource errors are fixed messages, with URLs and keys omitted.
             raise GatewayError("MEDIA_DOWNLOAD_FAILED", str(error)) from None
-        if data.startswith(b"wxgf"):
-            raise GatewayError("MEDIA_UNSUPPORTED", "WXGF 尚未启用转换；不改变原动画播放时长")
-        if data.startswith((b"GIF87a", b"GIF89a")):
-            payload = resources._gif_payload(data)
-            from wxbot_framework import emoticons
-            kind, width, height, _, _, _ = emoticons._raster_info(payload)
-            if len(payload) > emoticons.MAX_EMOTICON_BYTES or max(width, height) > emoticons.MAX_EMOTICON_DIMENSION:
-                raise GatewayError("MEDIA_UNSUPPORTED", "原生 GIF 超过上游 1 MiB/1024 像素发送限制")
-            return {"data": payload, "source_data": data, "source_format": kind, "converted": False, "note": ""}
-        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise GatewayError("MEDIA_UNSUPPORTED", "该原生表情原件格式尚未支持")
-        from ..sticker_media import png_to_gif
-        payload, note = png_to_gif(data, current)
-        # Compatibility with libraries saved before originals were retained:
-        # keep the pinned old encoder solely to recognize their 32-color hash.
-        legacy_digest = hashlib.sha256(resources.gif_bytes(data, current)).hexdigest()
-        return {"data": payload, "source_data": data, "source_format": "PNG", "converted": True,
-                "legacy_digest": legacy_digest, "note": note}
+        diagnostic = _media_diagnostic(data)
+        try:
+            if data.startswith(b"wxgf"):
+                raise GatewayError("MEDIA_UNSUPPORTED", "WXGF 尚未启用转换；不改变原动画播放时长")
+            from ..sticker_media import convert_sticker
+            try:
+                payload = resources._gif_payload(data) if data.startswith((b"GIF87a", b"GIF89a")) else data
+            except resources.StickerError:
+                raise GatewayError("MEDIA_UNSUPPORTED", "原生表情资源必须是完整 GIF") from None
+            result = convert_sticker(payload, current)
+            legacy_digest = None
+            if result['source_format'] == 'PNG':
+                # Old 32-color hashes help recognize existing library entries.
+                # Legacy encoder limits must not reject a newly supported source.
+                try:
+                    legacy_digest = hashlib.sha256(resources.gif_bytes(data, current)).hexdigest()
+                except (ValueError, RuntimeError, OSError):
+                    pass
+            return {**result, "source_data": data, "legacy_digest": legacy_digest,
+                    "diagnostic": diagnostic}
+        except Exception as error:
+            # Only a fully downloaded and MD5-verified selected upload reaches
+            # this point. Runtime may preserve these bytes outside the library.
+            error.source_data = data
+            error.media_diagnostic = diagnostic
+            raise
 
     def stop(self):
         with self._lock:

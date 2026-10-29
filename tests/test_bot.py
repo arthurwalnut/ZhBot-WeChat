@@ -65,7 +65,7 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     saved = next(item for item in draws if item['user_id'] == 'wxid_alice')
     from datetime import datetime
     date = datetime.strptime(saved['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')
-    assert json.loads(replies[0]['payload'])['text'] == f"今天（{date}）你的zxj是“{saved['result']}”"
+    assert json.loads(replies[0]['payload'])['text'] == f"今天（{date}）\n你的zxj是“{saved['result']}”"
     for value in (
         event(4, mentioned_ids=()),  # Visible @ text has no native mention.
         event(5, chat_id="other@chatroom"),
@@ -239,3 +239,18 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
         response = json.loads(rows(runtime,'outbox')[-1]['payload'])['text']
         assert expected in response and 'secret' not in response and 'https:' not in response and '<xml>' not in response
         assert len(rows(runtime,'stickers')) == 1
+
+    # A selected, downloaded original survives conversion failure for diagnosis,
+    # without creating a random-sendable library entry or leaking its metadata.
+    failure = GatewayError('MEDIA_UNSUPPORTED', '该原生表情原件格式尚未支持')
+    failure.source_data = b'unsupported-synthetic-format'
+    failure.media_diagnostic = {'bytes': len(failure.source_data), 'format': 'UNKNOWN'}
+    process(runtime, event(16, '添加表情包'))
+    runtime.receive(event(17, message_type='sticker', text='', mentioned_ids=()))
+    def unsupported_fetch(_):
+        raise failure
+    gateway.fetch_sticker = unsupported_fetch
+    assert runtime.process_one()
+    archived = list((runtime.stickers.directory / 'unprocessed').glob('*.bin'))
+    assert len(archived) == 1 and archived[0].read_bytes() == failure.source_data
+    assert len(rows(runtime, 'stickers')) == 1

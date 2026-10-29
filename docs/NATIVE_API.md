@@ -13,7 +13,7 @@
 | `send(Outgoing(kind='text'))` | `send_text(chat_id,text)`；真实 @ 用 `send_at_text(room,text,at_list)` |
 | `send(Outgoing(kind='image'))` | `send_image(chat_id,path)` → `WxSendImage` |
 | `send(Outgoing(kind='sticker'))` | `send_emoticon(chat_id,path)` → `WxSendEmoticon`，原生类型 47 |
-| `fetch_sticker(event)` | 只加载 `plugins/anti_recall/stickers.py` 资源函数：`Sticker`、`download_sticker`、`_gif_payload`；PNG 发送副本由本项目 `png_to_gif` 生成，旧 `gif_bytes` 仅计算兼容去重摘要；不实例化防撤回插件 |
+| `fetch_sticker(event)` | 只加载 `plugins/anti_recall/stickers.py` 资源函数：`Sticker`、`download_sticker`、`_gif_payload`；发送副本由本项目 `convert_sticker` 生成，旧 `gif_bytes` 仅计算兼容去重摘要；不实例化防撤回插件 |
 | `stop()` | 上游正常 stop，等接收/媒体任务结束，复用 `WxRemoveSelfTest`、`BridgeGuard`、`bridge_watchdog.py` |
 
 上游 `run_selftest.py` 实际承担生产远程调用、构建检查及卸载，必须保留。`text_bridge.cpp` 复用 `selftest_bridge.cpp`；两个桥接 DLL 和 MinHook 源码/许可也保留。没有按文件名删除这些组件。
@@ -38,7 +38,9 @@
 
 类型 47 使用单条消息的原件地址/MD5，经上游 CDN 主机白名单、禁止重定向、大小、超时和 MD5 校验后获取。只在上传等待已匹配后下载，不导出账号收藏。原始 XML不保留；被接受上传事件的受控资源参数暂存于 inbox，普通日志不写 CDN 凭据。
 
-当前支持完整 GIF 与静态 PNG 表情原件。GIF 保留编码和帧时序，允许按上游结构解析去掉微信附加尾标；GIF 超过 1 MiB 或 1024 像素不隐式缩放。2026-10-30 起，静态 PNG 保留原件并生成最多 256 色的 GIF 副本，超原生尺寸/体积时等比缩小，数据库 `note` 保留颜色/半透明变化及缩放尺寸说明；按用户要求，添加成功回复只显示编号和结果。APNG 明确拒绝，未将动画拍平成单帧。原件与副本分别保存并校验摘要，兼容旧 32 色条目的去重。
+当前支持完整 GIF 与静态 PNG/JPEG/WebP/BMP 表情原件。可直接发送的 GIF 保留编码，允许按上游结构解析去掉微信附加尾标；较大的 GIF 和其他格式生成最多 256 色、等比缩小的发送副本，校验帧数、各帧时长和循环设置不变。原件可到 20 MiB、8192 像素、累计 128 Mi 像素；发送副本保持 1 MiB/1024 像素/300 帧/64 Mi 像素校验。前两项在固定 C++ 桥接内亦有硬检查，未修改上游或桥接限制。
+
+数据库 `note` 保留转换说明，添加成功回复只显示编号和结果。APNG/动画 WebP 与 WXGF 明确拒绝，未将动画拍平成单帧。原件与副本分别保存并校验摘要，兼容旧 32 色条目的去重；旧编码器仅用于兼容摘要，其较低解码限制不会拒绝新支持的资源。下载完成并校验成功后的转换失败可留存原件和不含凭据的格式诊断；不会建立可随机发送的条目。
 
 WXGF 返回明确未支持，本版不安装 FFmpeg，也不把改变时长的转换当作原动画重放。此前 4.1.15.13 上的静态 PNG→32 色 GIF 原生发送已有手机确认；新版 256 色转换、动画 GIF 以及实际更新至 4.1.15.56 后的收发分别验收。
 

@@ -84,7 +84,7 @@ class Router:
             if text == "随机zxj" and cfg.zxj:
                 result = draw(event.sender_id, connection=c, now=datetime.fromtimestamp(event.received_at,UTC))
                 date = datetime.strptime(result['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')
-                return reply(f"今天（{date}）你的zxj是“{result['result']}”")
+                return reply(f"今天（{date}）\n你的zxj是“{result['result']}”")
             if text.startswith("我的zxj") and cfg.zxj:
                 page = int(text.split()[1]) if " " in text else 1
                 result = history_page(event.sender_id, page=page, connection=c)

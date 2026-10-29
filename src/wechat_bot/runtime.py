@@ -14,7 +14,7 @@ from .gateway import Event, GatewayError, Outgoing
 from .router import Router
 from .store import BotStore
 from .stickers import StickerError, StickerService
-from .sticker_media import PNG_PUBLIC_REASONS
+from .sticker_media import MEDIA_PUBLIC_REASONS
 
 log = logging.getLogger("wechat_bot")
 
@@ -28,13 +28,13 @@ _PUBLIC_MEDIA_REASONS = frozenset({
     "该原生表情原件格式尚未支持",
     "表情 GIF 必须非空且不超过 1 MiB", "原生表情资源必须是完整 GIF",
     "表情超出 1024 像素、300 帧或累计像素限制", "表情 GIF 无法完整解码",
-    "当前仅接受 GIF 原件或已明确说明的 PNG 转换", "表情转换说明无效",
+    "表情原件格式尚未支持", "表情转换说明无效",
     "表情保存目录发生重定向", "同摘要的现有表情文件内容不一致",
     "表情包连接已结束", "表情包下载地址无效", "表情包下载地址不受支持",
     "表情包响应超过大小限制", "表情包下载已取消或超时",
     "表情包下载失败或超过支持范围", "表情包内容校验失败或连接已结束",
     "表情原件缺失、格式不符或超过 20 MiB", "已保存表情原件的路径或摘要不一致",
-}) | PNG_PUBLIC_REASONS
+}) | MEDIA_PUBLIC_REASONS
 
 
 @contextmanager
@@ -117,6 +117,7 @@ class Runtime:
         data = json.loads(row['payload'])
         prepared = None
         media_error = None
+        resource = None
         if data.get('sticker_intent'):
             try:
                 event = Event(**{k:v for k,v in data.items() if k in Event.__dataclass_fields__})
@@ -124,10 +125,22 @@ class Runtime:
                     raise ValueError('上传账号/群已不在当前授权范围')
                 event = replace(event,connection_id=self.gateway.connection_id)
                 resource = self.gateway.fetch_sticker(event)
+                log.info("sticker_resource inbox=%s source=%s", row['id'],
+                         json.dumps(resource.get('diagnostic', {}), ensure_ascii=False))
                 prepared = self.stickers.prepare(resource['data'],source_format=resource['source_format'],
                     note=resource.get('note',''),source_data=resource.get('source_data'),
                     legacy_digest=resource.get('legacy_digest'))
             except Exception as error:
+                diagnostic = getattr(error, 'media_diagnostic', (resource or {}).get('diagnostic', {}))
+                source = getattr(error, 'source_data', (resource or {}).get('source_data'))
+                if source is not None:
+                    try:
+                        archived = self.stickers.archive_failed_source(source)
+                        diagnostic = {**diagnostic, 'archived': archived.name}
+                    except (OSError, ValueError):
+                        diagnostic = {**diagnostic, 'archive_failed': True}
+                log.info("sticker_resource_failed inbox=%s type=%s source=%s", row['id'],
+                         type(error).__name__, json.dumps(diagnostic, ensure_ascii=False))
                 reason = str(error) if isinstance(error,(GatewayError,StickerError)) else ''
                 media_error = "表情资源取得或持久保存失败：" + (
                     reason if reason in _PUBLIC_MEDIA_REASONS else type(error).__name__)
