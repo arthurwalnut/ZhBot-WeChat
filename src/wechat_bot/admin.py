@@ -6,6 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import dictionaries
+from . import groups as group_management
 from .store import BotStore
 from .stickers import MAX_SOURCE_BYTES, StickerService
 from .sticker_media import convert_sticker
@@ -94,6 +95,8 @@ class AdminService:
         return {'ok': True, **result}
 
     def _execute(self, connection, action, request):
+        if action in ('group_status', 'group_begin', 'group_cancel', 'group_accept', 'group_edit'):
+            return group_management.manage(connection, self.config, action, request)
         if action == 'zxj_dictionary':
             return {'characters': dictionaries.characters(connection)}
         if action == 'zxj_save':

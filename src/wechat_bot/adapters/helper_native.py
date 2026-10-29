@@ -231,11 +231,6 @@ class HelperNative:
         if account != self.account_id:
             self._fault = "ACCOUNT_MISMATCH"
             return None
-        if not self.binding_mode and not (
-            (message.is_group and room in self.group_allowlist) or
-            (not message.is_group and room == self.owner_id and sender == self.owner_id)
-        ):
-            return None
         native_id = data.get("native_message_id")
         if (not isinstance(native_id, str) or not native_id.isdecimal() or int(native_id) <= 0 or
                 not isinstance(sender, str) or not _IDENTIFIER.fullmatch(sender) or
@@ -245,6 +240,17 @@ class HelperNative:
                 bool(room.endswith("@chatroom")) != bool(message.is_group)):
             self.rejected_identity += 1
             return None
+        if not self.binding_mode and not (
+            (message.is_group and room in self.group_allowlist) or
+            (not message.is_group and room == self.owner_id and sender == self.owner_id)
+        ):
+            # The only unlisted-group input is an owner's explicit registration
+            # command. Runtime checks its local one-use code before saving any
+            # candidate; it never creates a business reply here.
+            from ..groups import matches_registration
+            if not (message.is_group and message.type == 1 and matches_registration(
+                    self.account_id, self.owner_id, sender, message.text, data.get("at_members") or ())):
+                return None
         kind = {1: "text", 3: "image", 47: "sticker"}[message.type]
         media = None
         if kind == "image":

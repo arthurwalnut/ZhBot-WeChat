@@ -83,6 +83,11 @@ class Runtime:
 
     def receive(self, event):
         try:
+            from .groups import is_registration, capture
+            if is_registration(self.config, event):
+                with self.store.transaction() as c:
+                    capture(c, self.config, event)
+                return  # Registration has no inbox, game effects or outbox.
             if not self.router.in_scope(event):
                 return
             with self.store.transaction() as c:
@@ -216,11 +221,23 @@ class Runtime:
 
     def write_status(self):
         record = dict(state=self.state,pid=os.getpid(),updated_at=time.time(),error=self.error,
-                      last_receive=self.last_receive,counts=self.store.counts(),connection=self.gateway.health())
+                      last_receive=self.last_receive,counts=self.store.counts(),connection=self.gateway.health(),
+                      group_allowlist=list(self.config.group_allowlist),enrollment_supported=True)
         target = self.config.data_dir / 'status.json'
         temp = target.with_suffix('.tmp')
-        temp.write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8')
-        temp.replace(target)
+        encoded = json.dumps(record,ensure_ascii=False,indent=2)
+        # Windows readers can briefly hold the destination without delete-sharing.
+        # Retry publication before treating a persistent filesystem error as fatal.
+        for attempt in range(8):
+            try:
+                temp.write_text(encoded,encoding='utf-8')
+                temp.replace(target)
+                return
+            except PermissionError:
+                if attempt == 7:
+                    log.exception('status publication failed after bounded retries')
+                    raise
+                time.sleep(0.025)
 
     def _sender(self):
         while not self.shutdown.wait(0.2):

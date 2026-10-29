@@ -93,7 +93,7 @@ def control(action):
         (config.data_dir / "stop.request").write_text(str(time.time()), encoding="ascii")
         return {"state": "STOP_REQUESTED", "version": __version__,
                 "reason": "已请求正常停止；等待发送与原生桥接清理。"}
-    if action not in ("start", "check"):
+    if action not in ("start", "check", "restart"):
         raise ValueError("Unknown launcher action")
     config.require_binding()
     python = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -108,6 +108,20 @@ def control(action):
     if action == "check":
         return {"state": "CHECKED", "version": __version__, "reason": "入口、Python、配置和依赖存在；未加载微信桥接。"}
     with start_lock(config):
+        if action == "restart":
+            record = status(config)
+            if record.get("process_alive") is None:
+                raise ValueError("配置已保存，但无法核验旧进程；请检查状态后再启动")
+            if record.get("process_alive") is True:
+                (config.data_dir / "stop.request").write_text(str(time.time()), encoding="ascii")
+                deadline = time.monotonic() + 70
+                while record.get("process_alive") is True:
+                    if time.monotonic() >= deadline:
+                        raise ValueError("配置已保存，旧进程仍在正常停止；请确认停止后点击启动，未强制结束进程")
+                    time.sleep(0.25)
+                    record = status(config)
+                if record.get("process_alive") is None:
+                    raise ValueError("配置已保存，停止结果无法核验；请检查状态后再启动")
         return start(config, python, config_path)
 
 
@@ -150,7 +164,7 @@ def start(config, python, config_path):
 def main():
     try:
         if len(sys.argv) != 2:
-            raise ValueError("Expected start, stop, status, check or admin")
+            raise ValueError("Expected start, stop, restart, status, check or admin")
         print(json.dumps(control(sys.argv[1]), ensure_ascii=False), flush=True)
         return 0
     except Exception as error:

@@ -38,7 +38,7 @@ internal static class Program
                 byte[] bytes = new UTF8Encoding(false).GetBytes(data);
                 process.StandardInput.BaseStream.Write(bytes, 0, bytes.Length); process.StandardInput.Close();
             }
-            if (!process.WaitForExit(data == null ? 15000 : 120000))
+            if (!process.WaitForExit(data == null && action != "restart" ? 15000 : 120000))
             {
                 process.Kill(); // Only this control helper, never the bot or WeChat.
                 throw new IOException("本机操作超时，请刷新确认结果后再操作；机器人进程未被强制停止");
@@ -144,8 +144,8 @@ internal sealed class LauncherForm : Form
     private readonly Label previewInfo = new Label();
     private readonly CheckBox showOriginal = new CheckBox();
     private MemoryStream previewStream;
-    private bool controlBusy, adminBusy, populating;
-    private string startupLog = "", ownerId = "";
+    private bool controlBusy, adminBusy, populating, groupRestartAwaitingReady;
+    private string startupLog = "", ownerId = "", pendingControl = "";
     internal LauncherForm(bool statusOnly)
     {
         Text = "ZhBot · 机器人管理"; Font = new Font("Microsoft YaHei UI", 10);
@@ -157,7 +157,11 @@ internal sealed class LauncherForm : Form
         headline.Text = "正在检查机器人状态…"; headline.Font = new Font(Font.FontFamily, 18, FontStyle.Bold); headline.Dock = DockStyle.Fill; headline.TextAlign = ContentAlignment.MiddleLeft;
         start = Ui.Button("启动机器人", delegate { ExecuteControl("start"); });
         stop = Ui.Button("正常停止", delegate { ExecuteControl("stop"); });
-        var controls = Ui.Bar(); controls.Controls.AddRange(new Control[] { start, stop, Ui.Button("刷新数据", delegate { LoadOverview(true); ExecuteControl("status"); }), Ui.Label("关闭管理窗口后，机器人继续后台运行") });
+        var controls = Ui.Bar(); controls.Controls.AddRange(new Control[] { start, stop, Ui.Button("刷新数据", delegate { LoadOverview(true); ExecuteControl("status"); }), Ui.Button("群聊接入", delegate
+        {
+            using (var dialog = new GroupsDialog())
+                if (dialog.ShowDialog(this) == DialogResult.OK) { ExecuteControl("restart"); LoadOverview(true); }
+        }), Ui.Label("关闭管理窗口后，机器人继续后台运行") });
         var filters = Ui.Bar(); groups.Width = 330; members.Width = 330;
         groups.DropDownStyle = members.DropDownStyle = ComboBoxStyle.DropDownList; groups.DropDownWidth = members.DropDownWidth = 550;
         filters.Controls.AddRange(new Control[] { Ui.Label("群"), groups, Ui.Label("成员"), members });
@@ -200,7 +204,7 @@ internal sealed class LauncherForm : Form
         members.SelectedIndex = 0; for (int i = 0; i < members.Items.Count; i++) if (((Choice)members.Items[i]).Id == selected) members.SelectedIndex = i;
         populating = false;
     }
-    private void LoadOverview(bool refreshSelection)
+    internal void LoadOverview(bool refreshSelection)
     {
         RunAdmin(J.Request("overview"), delegate(Dictionary<string, object> record)
         {
@@ -245,9 +249,12 @@ internal sealed class LauncherForm : Form
             catch (Exception error) { footer.Text = "操作未完成：" + error.Message; MessageBox.Show(this, error.Message, "管理操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }; worker.RunWorkerAsync();
     }
-    private void ExecuteControl(string action)
+    internal void ExecuteControl(string action)
     {
-        if (controlBusy || IsDisposed) return; controlBusy = true; if (action != "status") start.Enabled = stop.Enabled = false;
+        if (IsDisposed) return;
+        if (controlBusy) { if (action == "restart") { pendingControl = action; footer.Text = "群配置已保存，等待当前状态检查后正常重启"; } return; }
+        controlBusy = true; if (action != "status") start.Enabled = stop.Enabled = false;
+        if (action == "restart") { groupRestartAwaitingReady = true; headline.Text = "群配置已保存，正在正常重启…"; footer.Text = "重启完成后核验运行状态，关闭窗口不会撤销已保存配置"; }
         var worker = new BackgroundWorker(); worker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = Program.Call(action); };
         worker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e)
         {
@@ -275,8 +282,31 @@ internal sealed class LauncherForm : Form
                 }
                 details.Text = lines.ToString(); start.Enabled = J.Text(record, "process_alive") != "True" && state != "STARTING";
                 stop.Enabled = state != "STOPPED" && state != "STOP_REQUESTED" && state != "ERROR";
+                if (groupRestartAwaitingReady)
+                {
+                    if (state == "READY") { groupRestartAwaitingReady = false; footer.Text = "群配置已保存，机器人已恢复运行；已生效群列表可在“群聊接入”查看"; }
+                    else if (state == "STARTING") footer.Text = "群配置已保存，正在启动，请等待运行状态";
+                    else if (state == "STOPPED" || state == "ERROR" || state == "DEGRADED")
+                    {
+                        groupRestartAwaitingReady = false; footer.Text = "群配置已保存，重启未完成，请检查状态后点击启动机器人";
+                        MessageBox.Show(this, footer.Text + "\r\n当前状态：" + state, "检查重启结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    else footer.Text = "群配置已保存，等待运行状态确认；请查看运行概览";
+                }
             }
-            catch (Exception error) { headline.Text = "入口状态读取失败"; details.Text = error.Message; start.Enabled = stop.Enabled = true; }
+            catch (Exception error)
+            {
+                headline.Text = "入口状态读取失败"; details.Text = error.Message; start.Enabled = stop.Enabled = true;
+                if (action == "restart")
+                {
+                    groupRestartAwaitingReady = false; footer.Text = "群配置已保存，重启未确认成功，请先检查运行状态；确认已停止后可点击启动机器人";
+                    MessageBox.Show(this, footer.Text + "\r\n" + error.Message, "检查重启结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            finally
+            {
+                if (!IsDisposed && pendingControl != "") { string next = pendingControl; pendingControl = ""; ExecuteControl(next); }
+            }
         }; worker.RunWorkerAsync();
     }
     private void EditCharacters()
@@ -410,5 +440,133 @@ internal sealed class StickerImportDialog : Form
         layout.Controls.Add(Ui.Label("表情文件"), 0, 1); layout.Controls.Add(file, 1, 1); layout.Controls.Add(browse, 2, 1);
         var note = Ui.Label("本机添加归属：" + owner + "\r\n加入所选群的公共表情池，按原件摘要查重"); note.Dock = DockStyle.Fill; layout.Controls.Add(note, 0, 2); layout.SetColumnSpan(note, 3);
         layout.Controls.Add(Ui.Button("添加到群库", delegate { if (file.Text == "") { MessageBox.Show(this, "先选择文件"); return; } DialogResult = DialogResult.OK; Close(); }), 1, 3); Controls.Add(layout);
+    }
+}
+internal sealed class GroupsDialog : Form
+{
+    private readonly ListBox configured = new ListBox();
+    private readonly TextBox command = new TextBox(), knownId = new TextBox(), candidate = new TextBox(), applied = new TextBox();
+    private readonly Label state = new Label(), result = new Label();
+    private readonly Button begin, cancel, accept, copy, refresh, add, remove, restart;
+    private string[] expectedGroups = new string[0];
+    private string enrollmentState = "idle", runtimeState = "";
+    private bool busy, saving, restartRequired;
+    internal GroupsDialog()
+    {
+        Text = "群聊接入"; Font = new Font("Microsoft YaHei UI", 10); ClientSize = new Size(870, 690);
+        MinimumSize = new Size(840, 700); StartPosition = FormStartPosition.CenterParent; BackColor = Color.White;
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 5 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 83)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 286));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        var instructions = Ui.Label("1  先把机器人账号拉进目标群，然后生成登记码\r\n2  由配置的主人账号，在目标群真实 @机器人并发送下方命令，5 分钟内有效\r\n3  刷新状态后，核对候选群与发送者的原生 ID，再点击确认接入并重启");
+        instructions.Dock = DockStyle.Fill; instructions.Margin = Padding.Empty; layout.Controls.Add(instructions, 0, 0);
+        var enroll = new GroupBox { Text = "通过群内登记接入", Dock = DockStyle.Fill, Padding = new Padding(12) };
+        var steps = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        steps.RowStyles.Add(new RowStyle(SizeType.Absolute, 44)); steps.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        steps.RowStyles.Add(new RowStyle(SizeType.Absolute, 31)); steps.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); steps.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        begin = Ui.Button("生成登记码", delegate { Request(J.Request("group_begin"), false, delegate { LoadStatus(); }); });
+        copy = Ui.Button("复制命令", delegate { try { Clipboard.SetText(command.Text); result.Text = "命令已复制，发送时请在微信选择真实 @机器人"; } catch (Exception error) { MessageBox.Show(this, error.Message, "复制命令"); } });
+        refresh = Ui.Button("刷新状态", delegate { LoadStatus(); });
+        cancel = Ui.Button("取消登记", delegate { Request(J.Request("group_cancel"), false, delegate { LoadStatus(); }); });
+        var toolbar = Ui.Bar(); toolbar.Controls.AddRange(new Control[] { begin, copy, refresh, cancel }); steps.Controls.Add(toolbar, 0, 0);
+        command.ReadOnly = true; command.Dock = DockStyle.Fill; command.BackColor = Color.FromArgb(242, 247, 252); steps.Controls.Add(command, 0, 1);
+        state.Dock = DockStyle.Fill; state.TextAlign = ContentAlignment.MiddleLeft; steps.Controls.Add(state, 0, 2);
+        candidate.Multiline = true; candidate.ReadOnly = true; candidate.Dock = DockStyle.Fill; candidate.ScrollBars = ScrollBars.Vertical; candidate.BackColor = Color.White; steps.Controls.Add(candidate, 0, 3);
+        accept = Ui.Button("确认接入并重启", delegate { Request(J.Request("group_accept"), true, Saved); });
+        var confirm = Ui.Bar(); confirm.Controls.Add(accept); confirm.Controls.Add(Ui.Label("配置保存成功后正常重启机器人")); steps.Controls.Add(confirm, 0, 4);
+        enroll.Controls.Add(steps); layout.Controls.Add(enroll, 0, 1);
+        var lists = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(0, 8, 0, 0) };
+        lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        lists.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); lists.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        lists.Controls.Add(Ui.Label("配置中的允许群 · 选择一项可移除"), 0, 0); lists.Controls.Add(Ui.Label("当前进程已生效的群"), 1, 0);
+        configured.Dock = DockStyle.Fill; configured.HorizontalScrollbar = true; configured.IntegralHeight = false; configured.SelectedIndexChanged += delegate { UpdateButtons(); };
+        applied.Dock = DockStyle.Fill; applied.ReadOnly = true; applied.Multiline = true; applied.ScrollBars = ScrollBars.Both; applied.WordWrap = false; applied.BackColor = Color.FromArgb(245, 247, 250);
+        lists.Controls.Add(configured, 0, 1); lists.Controls.Add(applied, 1, 1); layout.Controls.Add(lists, 0, 2);
+        knownId.Width = 250;
+        add = Ui.Button("添加并重启", delegate { EditGroups(true); }); remove = Ui.Button("移除选中并重启", delegate { EditGroups(false); });
+        restart = Ui.Button("应用配置并重启", delegate { DialogResult = DialogResult.OK; Close(); });
+        var manual = Ui.Bar(); manual.Controls.AddRange(new Control[] { Ui.Label("原生群 ID"), knownId, add, remove, restart }); layout.Controls.Add(manual, 0, 3);
+        result.Dock = DockStyle.Fill; result.TextAlign = ContentAlignment.MiddleLeft; result.ForeColor = Color.FromArgb(65, 83, 105); layout.Controls.Add(result, 0, 4);
+        Controls.Add(layout); UpdateButtons(); Shown += delegate { LoadStatus(); };
+        FormClosing += delegate(object s, FormClosingEventArgs e) { if (saving) { e.Cancel = true; result.Text = "正在保存群配置，请等待操作完成"; } };
+    }
+    private void UpdateButtons()
+    {
+        if (begin == null || restart == null) return;
+        begin.Enabled = !busy && runtimeState == "READY" && !restartRequired;
+        copy.Enabled = !busy && enrollmentState == "waiting" && command.Text != "";
+        cancel.Enabled = !busy && (enrollmentState == "waiting" || enrollmentState == "candidate");
+        accept.Enabled = !busy && enrollmentState == "candidate";
+        refresh.Enabled = knownId.Enabled = configured.Enabled = add.Enabled = !busy;
+        remove.Enabled = !busy && configured.SelectedItem != null;
+        restart.Enabled = !busy && restartRequired;
+    }
+    private void LoadStatus()
+    {
+        Request(J.Request("group_status"), false, delegate(Dictionary<string, object> data)
+        {
+            object raw; expectedGroups = data.TryGetValue("groups", out raw) ? J.Strings(raw) : new string[0];
+            string selected = Convert.ToString(configured.SelectedItem); configured.Items.Clear(); configured.Items.AddRange(expectedGroups);
+            if (selected != "" && configured.Items.Contains(selected)) configured.SelectedItem = selected;
+            else if (configured.Items.Count > 0) configured.SelectedIndex = 0;
+            runtimeState = J.Text(data, "runtime_state"); restartRequired = J.Text(data, "restart_required") == "True";
+            string[] actual = data.TryGetValue("applied_groups", out raw) ? J.Strings(raw) : new string[0];
+            applied.Text = "运行状态：" + runtimeState + "\r\n" + (restartRequired ? "当前配置尚待运行进程确认，可应用配置并重启" : "配置与已生效列表一致") + "\r\n\r\n" + (actual.Length == 0 ? "尚无已生效群记录" : String.Join("\r\n", actual));
+            var enrollment = J.Object(data, "enrollment") ?? new Dictionary<string, object>(); enrollmentState = J.Text(enrollment, "state");
+            command.Text = enrollmentState == "waiting" ? J.Text(enrollment, "command") : "";
+            if (enrollmentState == "waiting")
+            {
+                state.Text = "等待主人在目标群真实 @机器人发送命令 · 有效期至 " + Expiry(J.Text(enrollment, "expires_at"));
+                candidate.Text = "发送后点击“刷新状态”查看原生消息中的群 ID 和主人 ID";
+            }
+            else if (enrollmentState == "candidate")
+            {
+                state.Text = "已收到候选群，请核对后在本机确认接入";
+                candidate.Text = "原生群 ID：" + J.Text(enrollment, "group_id") + "\r\n发送者 ID：" + J.Text(enrollment, "sender_id") + "\r\n原生消息 ID：" + J.Text(enrollment, "native_message_id");
+            }
+            else
+            {
+                state.Text = enrollmentState == "expired" ? "登记码已过期，请重新生成" : "尚未开始登记";
+                candidate.Text = "群名和昵称不用于群身份确认，可通过登记取得原生群 ID";
+            }
+            result.Text = runtimeState == "READY" ? (restartRequired ? "请先点击“应用配置并重启”，等机器人运行后再生成登记码" : "仅配置的主人账号可以完成群内登记，机器人不会自动向目标群发消息") : "运行状态为 " + runtimeState + "，请先返回运行概览启动或检查机器人";
+            UpdateButtons();
+        });
+    }
+    private static string Expiry(string value)
+    {
+        double seconds;
+        if (!Double.TryParse(value, out seconds)) return value;
+        try { return new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(seconds).ToLocalTime().ToString("HH:mm:ss"); }
+        catch (ArgumentOutOfRangeException) { return value; }
+    }
+    private void EditGroups(bool adding)
+    {
+        string id = adding ? knownId.Text.Trim() : Convert.ToString(configured.SelectedItem);
+        if (String.IsNullOrWhiteSpace(id)) { MessageBox.Show(this, adding ? "请输入已知的原生群 ID" : "请选择要移除的群", "群聊接入"); return; }
+        if (!adding && MessageBox.Show(this, "从允许群移除 " + id + " 并正常重启？\r\n该群已有数据保留", "移除群", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        var request = J.Request("group_edit"); request["add"] = adding ? new[] { id } : new string[0]; request["remove"] = adding ? new string[0] : new[] { id }; request["expected_groups"] = expectedGroups;
+        Request(request, true, Saved);
+    }
+    private void Saved(Dictionary<string, object> data)
+    {
+        result.Text = "群配置已保存，返回概览后正常重启"; DialogResult = DialogResult.OK; Close();
+    }
+    private void Request(Dictionary<string, object> request, bool savesConfiguration, Action<Dictionary<string, object>> completed)
+    {
+        if (busy) return; busy = true; saving = savesConfiguration; UpdateButtons(); result.Text = saving ? "正在保存群配置…" : "正在读取登记状态…";
+        var worker = new BackgroundWorker(); worker.DoWork += delegate(object s, DoWorkEventArgs e) { e.Result = Program.CallAdmin(request); };
+        worker.RunWorkerCompleted += delegate(object s, RunWorkerCompletedEventArgs e)
+        {
+            worker.Dispose(); if (IsDisposed) return; busy = saving = false;
+            try
+            {
+                if (e.Error != null) throw e.Error;
+                var data = Program.Json.Deserialize<Dictionary<string, object>>((string)e.Result);
+                if (J.Text(data, "ok") != "True") throw new IOException(J.Text(data, "error") == "" ? "群配置操作未完成" : J.Text(data, "error"));
+                UpdateButtons(); if (completed != null) completed(data);
+            }
+            catch (Exception error) { result.Text = "操作未完成，请刷新后检查结果"; MessageBox.Show(this, error.Message, "群聊接入", MessageBoxButtons.OK, MessageBoxIcon.Warning); UpdateButtons(); }
+        }; worker.RunWorkerAsync();
     }
 }
