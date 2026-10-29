@@ -82,7 +82,9 @@ class BotStore:
             if payload['kind'] != 'text':
                 parts.append(payload)
                 continue
-            encoded = payload['text'].encode('utf-8')
+            # Chat style applies to bot prose, before the adapter adds members'
+            # unchanged display labels. English dots in dates remain intact.
+            encoded = payload['text'].replace('。', '').encode('utf-8')
             first = True
             while encoded:
                 end = min(700,len(encoded))

@@ -94,6 +94,7 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     process(runtime, event(18, text='我的zxj'))
     assert f"{date}：{saved['result']}" in json.loads(rows(runtime,'outbox')[-1]['payload'])['text']
     assert all(item["chat_id"] in {"123@chatroom", "wxid_owner"} for item in rows(runtime, "outbox"))
+    assert all('。' not in json.loads(item['payload']).get('text', '') for item in rows(runtime, 'outbox'))
 
 
 def test_atomic_effects_dedup_send_failures_and_uncertain_restart(tmp_path):
@@ -209,10 +210,12 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
         assert upload.connection_id == gateway.connection_id
         assert upload.account_id == "wxid_robot" and upload.chat_id == "123@chatroom"
         assert time.time()-upload.received_at > runtime.config.max_command_age_seconds
-        return {"data": gif.getvalue(), "source_format": "GIF"}
+        return {"data": gif.getvalue(), "source_format": "GIF", "note": "仅保留在记录中的资源说明"}
     gateway.fetch_sticker = fetch
     runtime = Runtime(runtime.config, gateway)
     assert runtime.process_one()
+    assert json.loads(rows(runtime, 'outbox')[-1]['payload'])['text'] == '表情编号1：添加成功'
+    assert rows(runtime, 'stickers')[0]['note'] == '仅保留在记录中的资源说明'
     runtime = Runtime(runtime.config, gateway)
     process(runtime, event(9, "随机表情包", sender="wxid_bob"))
     while runtime.send_one():

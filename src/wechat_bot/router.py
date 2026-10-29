@@ -164,9 +164,7 @@ class Router:
                 elif prepared:
                     try:
                         item = self.stickers.add(c,data['sticker_intent'],prepared)
-                        text = f"表情编号 {item['id']}：" + ('已有同一资源。' if item['is_duplicate'] else '添加成功。')
-                        if not item['is_duplicate'] and prepared.get('note'):
-                            text += prepared['note']
+                        text = f"表情编号{item['id']}：" + ('已有同一资源' if item['is_duplicate'] else '添加成功')
                     except (ValueError, OSError) as error:
                         text = '表情保存校验失败：' + type(error).__name__
                     replies = [{'kind':'text','text':text,'mentioned_ids':[event.sender_id]}]
