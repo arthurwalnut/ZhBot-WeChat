@@ -62,8 +62,8 @@ def supported_lengths():
 
 
 class WordleService:
-    def __init__(self, db_path, *, answer_picker=None):
-        self.store = WordleStore(db_path)
+    def __init__(self, db_path, *, answer_picker=None, initialize=True):
+        self.store = WordleStore(db_path, initialize=initialize)
         self.answers, self.allowed = _load_words()
         # Tests may choose a fixed answer; the normal CLI exposes no answer override.
         self.answer_picker = answer_picker or secrets.choice
@@ -87,12 +87,12 @@ class WordleService:
             board["answer"] = game["answer"]
         return board
 
-    def start(self, group_id, user_id, length=5):
+    def start(self, group_id, user_id, length=5, *, connection=None):
         group_id, user_id = _identifier(group_id, "group"), _identifier(user_id, "user")
         candidates = tuple(word for word in self.answers if len(word) == length)
         if not candidates:
             raise GameError(f"本地答案词库支持的长度：{', '.join(map(str, supported_lengths()))}。")
-        with self.store.transaction() as connection:
+        with self.store.transaction(connection) as connection:
             existing = self.store.load(connection, group_id, active_only=True)
             if existing:
                 raise GameError(f"该群已有进行中的对局 #{existing['id']}；请继续猜测或由开局者结束。")
@@ -102,9 +102,9 @@ class WordleService:
             game_id = self.store.create(connection, group_id, user_id, answer, _now())
             return self._board(self.store.load(connection, group_id, game_id))
 
-    def guess(self, group_id, user_id, word):
+    def guess(self, group_id, user_id, word, *, connection=None):
         group_id, user_id = _identifier(group_id, "group"), _identifier(user_id, "user")
-        with self.store.transaction() as connection:
+        with self.store.transaction(connection) as connection:
             game = self.store.load(connection, group_id)
             if game is None:
                 raise GameError("该群尚无对局；请先 start。")
@@ -127,27 +127,34 @@ class WordleService:
                 self.store.finish(connection, game["id"], "lost", timestamp)
             return self._board(self.store.load(connection, group_id, game["id"]))
 
-    def current(self, group_id, game_id=None):
+    def current(self, group_id, game_id=None, *, connection=None):
         group_id = _identifier(group_id, "group")
-        with self.store.transaction() as connection:
+        with self.store.transaction(connection) as connection:
             game = self.store.load(connection, group_id, game_id)
             if game is None:
                 raise GameError("找不到该群的指定对局。")
             return self._board(game)
 
-    def stats(self, user_id):
+    def stats(self, user_id, group_id=None, *, connection=None):
         user_id = _identifier(user_id, "user")
-        with self.store.transaction() as connection:
-            return {"user_id": user_id, "wins": self.store.wins(connection, user_id)}
+        if group_id is not None:
+            group_id = _identifier(group_id, "group")
+        with self.store.transaction(connection) as connection:
+            result = {"user_id": user_id, "wins": self.store.wins(connection, user_id, group_id)}
+            if group_id is not None:
+                result["group_id"] = group_id
+            return result
 
-    def end(self, group_id, user_id):
+    def end(self, group_id, user_id, *, owner_id=None, connection=None):
         group_id, user_id = _identifier(group_id, "group"), _identifier(user_id, "user")
-        with self.store.transaction() as connection:
+        if owner_id is not None:
+            owner_id = _identifier(owner_id, "owner")
+        with self.store.transaction(connection) as connection:
             game = self.store.load(connection, group_id)
             if game is None:
                 raise GameError("该群尚无对局。")
-            if user_id != game["creator_id"]:
-                raise GameError("只有本局开局者可以 end。")
+            if user_id != game["creator_id"] and user_id != owner_id:
+                raise GameError("只有本局开局者或配置主人可以 end。")
             if game["status"] != "active":
                 raise GameError(f"对局 #{game['id']} 已结束（{game['status']}）。")
             self.store.finish(connection, game["id"], "ended", _now())

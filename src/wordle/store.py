@@ -6,11 +6,18 @@ import sqlite3
 
 
 class WordleStore:
-    def __init__(self, db_path):
+    def __init__(self, db_path, *, initialize=True):
         self.path = Path(db_path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.transaction() as connection:
-            connection.executescript("""
+        if initialize:
+            with self.transaction() as connection:
+                self.initialize_schema(connection)
+
+    @staticmethod
+    def initialize_schema(connection):
+        """Create tables without executescript's implicit transaction commit."""
+        statements = (
+            """
                 CREATE TABLE IF NOT EXISTS games (
                     id INTEGER PRIMARY KEY,
                     group_id TEXT NOT NULL,
@@ -21,9 +28,11 @@ class WordleStore:
                     winner_id TEXT,
                     created_at_utc TEXT NOT NULL,
                     ended_at_utc TEXT
-                );
+                )""",
+            """
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_game_per_group
-                    ON games(group_id) WHERE status = 'active';
+                    ON games(group_id) WHERE status = 'active'""",
+            """
                 CREATE TABLE IF NOT EXISTS guesses (
                     game_id INTEGER NOT NULL REFERENCES games(id),
                     turn_number INTEGER NOT NULL CHECK (turn_number BETWEEN 1 AND 6),
@@ -32,11 +41,18 @@ class WordleStore:
                     created_at_utc TEXT NOT NULL,
                     PRIMARY KEY (game_id, turn_number),
                     UNIQUE (game_id, word)
-                );
-            """)
+                )""",
+        )
+        for statement in statements:
+            connection.execute(statement)
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, connection=None):
+        if connection is not None:
+            if not connection.in_transaction or connection.row_factory is not sqlite3.Row:
+                raise ValueError("外部连接需要已开启事务及 sqlite3.Row row_factory")
+            yield connection
+            return
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -95,7 +111,10 @@ class WordleStore:
             (status, winner_id, timestamp, game_id),
         )
 
-    def wins(self, connection, user_id):
-        return connection.execute(
-            "SELECT COUNT(*) FROM games WHERE status = 'won' AND winner_id = ?", (user_id,)
-        ).fetchone()[0]
+    def wins(self, connection, user_id, group_id=None):
+        query = "SELECT COUNT(*) FROM games WHERE status = 'won' AND winner_id = ?"
+        params = (user_id,)
+        if group_id is not None:
+            query += " AND group_id = ?"
+            params += (group_id,)
+        return connection.execute(query, params).fetchone()[0]

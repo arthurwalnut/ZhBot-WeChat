@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astra-wechat-lab"
-version = "0.1.0"
-description = "Independent local zxj, Wordle and read-only WeChat diagnostics"
+version = "0.2.0"
+description = "Native WeChat group games with transactional inbox and outbox"
 requires-python = ">=3.12"
 dependencies = ["Pillow>=11", "tzdata>=2025.2"]
 
 [project.optional-dependencies]
 reader = ["pywinauto>=0.6.9; sys_platform == 'win32'"]
+bot = ["pefile==2023.2.7; sys_platform == 'win32'", "cryptography==49.0.0; sys_platform == 'win32'"]
 dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]

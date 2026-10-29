@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/Prometheus-first/helper.git",
+  "commit": "3e65e4bdaff438dc616f32d412175842fa138763",
+  "license": "LicenseRef-helper-noncommercial-1.0",
+  "source_review_date": "2026-10-29",
+  "verification_scope": "source API inspection and local imports; not real group acceptance",
+  "dll_origin": "Tracked binaries from the pinned upstream commit. Upstream THIRD_PARTY_NOTICES states they are built from its native source and bundled MinHook 1.3.4; no independent reproducible-build verification was performed.",
+  "sha256": {
+    "native/build_text/text_bridge.dll": "82e7aa658b9f7a707bc52600f68c7c9025208234eebfe6ec4453530688a96e6b",
+    "native/build/selftest_bridge.dll": "3c313cafc5ad7c9b7689359fa25e1f6ffb8816169e8ce5e4c2c01f1da338b353"
+  }
+}

@@ -1,0 +1,22 @@
+# Copy to runtime/config.bot.toml. All relative paths resolve from that file.
+[bot]
+backend = "helper_native"
+account_id = ""
+owner_id = ""
+group_allowlist = []
+data_dir = "."
+helper_root = "../external/helper"
+# Set only after identifying the dedicated robot process: wechat_pid = 1234
+require_native_mention = true
+
+[features]
+zxj = true
+wordle = true
+# Enable after native emoticon receive/resource/send acceptance on this build.
+stickers = false
+
+[runtime]
+max_command_age_seconds = 120
+reply_expiry_seconds = 300
+max_send_attempts = 3
+per_user_cooldown_seconds = 1

@@ -1,149 +1,189 @@
-# Astra WeChat Lab v0.1.0
+# Astra WeChat Lab v0.2.0
 
-**v0.1.0 已在本机按用户接受的可见区域读取与 OCR 限制完成本轮验收。** 三个 Python 包独立运行：`zxj`、`wordle` 已通过核心测试；`wechat_reader` 在微信 4.1.15.13 读出真实私聊与群聊正文，并在可见快照中保留两位成员的相同正文及受限 OCR 标签。视口变化会产生 `gap`，群聊本轮证据包含重新建立基线后的 `snapshot`，不承诺连续完整的 `new` 事件或漏读补收。
+本版已增加 `wechat_bot` 原生接入、统一事务、待发回复及群功能代码。**真实群验收仍在进行，当前不能标记“群游戏可用”或“完整功能交付”。**
 
-实施依据为 `ASTRA_WECHAT_V0_1_0_PLAN.md`。2026-10-29 按用户授权调整为机器人号在专用服务器或旧电脑登录，移除同机双账号共存验收；读取仍需可用的 Windows 桌面和明确的目标窗口绑定。没有微信回复、游戏微信触发、大模型、表情包或私人助手入口。
+2026-10-29 本机记录：Windows 11、微信 4.1.15.13 的核心 DLL 指纹匹配固定上游；已实际接收指定群与主人私聊的新消息，并取得原生群 ID、成员 ID、消息编号及 `at_members`。最短收发检查的群文本、PNG 已获手机端确认；真实 @ 在补齐上游要求的显示标签和原生提及列表后复测，用户确认真正提及成功。完整机器人已通过 `start.ps1` 隐藏启动至 `READY`，原生正常停止与卸载已实测。代码接口、模拟测试、最短收发链路与完整群验收分别记录在 [兼容与验收结果](docs/COMPATIBILITY.md)。
 
-## 安装与入口
+实施依据：[v0.2.0 规划](ASTRA_WECHAT_V0_2_0_GROUP_READY_PLAN.md)。旧版 README 与验收事实完整保存在 [v0.1.0 验收记录](docs/V0_1_0_ACCEPTANCE.md)。旧游戏数据库、运行环境与验收文件保留；`wechat_reader` 继续用于独立诊断。生产入口只使用 helper 原生桥接，不订阅 OCR 快照。
 
-在 PowerShell 中进入本项目根目录。现有 `.venv` 可直接使用，无需激活或更改执行策略。
+## 安装
 
-本机初始没有 `py` 注册的 3.12，实际使用已有 `uv` 建立项目内 Python：
+在机器人专用 Windows 用户的已登录桌面中运行。使用 Python 3.12 x64、Git 和已正常登录的机器人微信。本机现有 `.venv`、`.python` 可继续使用；仅在新机器且尚无环境时执行 `py -3.12 -m venv .venv`。
+
+在项目根目录的 PowerShell 执行：
 
 ```powershell
-$env:UV_PYTHON_INSTALL_DIR = Join-Path (Get-Location) '.python'
-$env:UV_CACHE_DIR = Join-Path (Get-Location) '.cache\uv'
-uv python install 3.12
-uv venv --python 3.12 --seed .venv
-.\.venv\Scripts\python.exe -m pip install -c requirements-lock.txt -e ".[dev,reader]"
+$env:PYTHONIOENCODING = 'utf-8'
+.\.venv\Scripts\python.exe -m pip install -c requirements-lock.txt -e ".[bot,dev,reader]"
+.\scripts\fetch_helper.ps1
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m wechat_bot --help
 ```
 
-已安装 Python 3.12 的其他电脑也可先 `py -3.12 -m venv .venv`。仅玩游戏可安装 `-e .`，不加载 Windows 自动化依赖。`.python` 是本项目虚拟环境使用的解释器，请和 `.venv` 一并保留。
+`requirements-lock.txt` 固定本次检查的 Python 依赖。`fetch_helper.ps1` 从 `external/helper.lock.json` 获取固定提交、核对 DLL 摘要，并保留上游源码、许可和生命周期组件。已有目录的提交或受版本控制文件不同会停止，不覆盖现有修改。日常启动不重新安装依赖、不拉取最新分支。
+
+接入源为 [Prometheus-first/helper](https://github.com/Prometheus-first/helper/tree/3e65e4bdaff438dc616f32d412175842fa138763)，固定提交 `3e65e4bdaff438dc616f32d412175842fa138763`。许可为 `LicenseRef-helper-noncommercial-1.0`；其 [完整许可](https://github.com/Prometheus-first/helper/blob/3e65e4bdaff438dc616f32d412175842fa138763/LICENSE)允许个人学习、研究、测试、娱乐及非商业自用，分发须保留原许可和第三方声明。本项目没有将该组件改标为 MIT 或 Apache。组件来源及两份桥接 DLL 的摘要见 [第三方声明](THIRD_PARTY_NOTICES.md)和 [锁定清单](external/helper.lock.json)。DLL 来自该提交内的二进制文件，尚未独立验证可复现构建。
+
+## 绑定机器人、测试群与主人
+
+首次绑定需要真实进程、账号和群 ID。显示昵称、群名及旧 OCR 配置不能用作权限键。先完成微信扫码及手机确认，再进行以下操作。
 
 ```powershell
-.\.venv\Scripts\python.exe -m zxj --help
+New-Item -ItemType Directory -Force -Path runtime | Out-Null
+if (-not (Test-Path -LiteralPath 'runtime/config.bot.toml')) {
+    Copy-Item -LiteralPath config.bot.example.toml -Destination runtime/config.bot.toml
+}
+Get-Process Weixin | Select-Object Id, Path, SessionId, StartTime
+[int]$RobotPid = Read-Host '明确选择机器人微信进程 PID'
+.\.venv\Scripts\python.exe -m wechat_bot doctor --config runtime/config.bot.toml --pid $RobotPid
+```
+
+`doctor` 只读取指定进程的已加载核心模块、版本指纹和账号资料，不加载桥接。它要求实际 DLL 大小和 SHA-256 同时匹配上游支持项；版本字符串本身不足以通过校验。核对输出账号确属机器人后，填写实际 ID 并观察新消息：
+
+```powershell
+$RobotAccount = Read-Host 'doctor 输出且已确认的机器人 account_id'
+.\.venv\Scripts\python.exe -m wechat_bot bind --config runtime/config.bot.toml --pid $RobotPid --account $RobotAccount --observe --seconds 120
+```
+
+此命令加载明确绑定的原生桥接，发送通道禁用。出现 `OBSERVING` 后，由另一账号在指定测试群发送一条新消息，并真实 @机器人；若需要主人私聊管理，再由主人向机器人发送一条新私聊。终端只显示原生账号、群、发送者、消息编号、类型与提及对象，不输出聊天正文。观察结束正常停止桥接；这一步不自动保存群或主人配置。
+
+从对应新事件取得 `chat_id`（群 ID 以 `@chatroom` 结尾）及主人 `sender_id`，明确保存：
+
+```powershell
+$TestGroup = Read-Host '指定测试群的原生 chat_id'
+$OwnerAccount = Read-Host '主人原生 sender_id；仅本机管理可留空'
+if ($OwnerAccount) {
+    .\.venv\Scripts\python.exe -m wechat_bot bind --config runtime/config.bot.toml --pid $RobotPid --account $RobotAccount --group $TestGroup --owner $OwnerAccount
+} else {
+    .\.venv\Scripts\python.exe -m wechat_bot bind --config runtime/config.bot.toml --pid $RobotPid --account $RobotAccount --group $TestGroup
+}
+```
+
+省略 `--owner` 保留当前配置；新配置默认空主人。已有主人配置需要清空时编辑本地 TOML 的 `owner_id = ""`。多个允许群可重复传 `--group`。保存前核对实际账号，已有配置先备份到配置目录下的 `backups/`。
+
+`data_dir`、`helper_root` 的相对路径均从配置文件所在目录解析，运行时打印绝对数据路径。示例放入 `runtime/config.bot.toml` 后，默认数据在 `runtime/`。示例 `stickers = false`；原生表情真机验收前保持关闭，帮助中不展示关闭功能。机器人数据库绑定一个账号；换账号需使用独立数据目录。
+
+## 启动、状态与停止
+
+前台运行，Ctrl+C 请求正常停止：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_bot run --config runtime/config.bot.toml
+```
+
+在同一已登录用户会话中后台启动：
+
+```powershell
+.\scripts\start.ps1
+.\.venv\Scripts\python.exe -m wechat_bot status --config runtime/config.bot.toml
+.\.venv\Scripts\python.exe -m wechat_bot pause --config runtime/config.bot.toml
+.\.venv\Scripts\python.exe -m wechat_bot resume --config runtime/config.bot.toml
+.\scripts\stop.ps1
+.\.venv\Scripts\python.exe -m wechat_bot status --config runtime/config.bot.toml
+```
+
+三个管理脚本都接受 `-ConfigPath`；`start.ps1` 通过脚本位置定位项目虚拟环境，隐藏启动 Python 并打印进程、实际状态及启动日志。`stop.ps1` 等价于 `python -m wechat_bot stop --config ...`，提交停止请求后由运行循环调用上游清理。查看后续 `status` 确认结果；无需杀微信进程。
+
+`status` 显示账号连接、接收线程、上游能力、最近收件时间、inbox/outbox 各状态数量及错误。`READY` 表示本次桥接接收线程处于连接状态；每次发送是否到达仍以实际接收结果为准。状态文件超过 15 秒未更新或进程无法核验时显示 `STALE`；进程已退出时显示 `STOPPED`，并保留 `recorded_state` 供查看退出原因。没有新聊天本身不作为故障。
+
+暂停状态保存在数据库，停止新群业务处理；已生成的待发回复仍按队列处理。需要停止全部收发时使用 `stop`。配置主人可私聊发送 `机器人状态`、`暂停群功能`、`恢复群功能`；空主人配置只开放本机管理。普通私聊不进入游戏。
+
+按需安装或移除当前用户登录启动任务：
+
+```powershell
+.\scripts\register_task.ps1
+.\scripts\register_task.ps1 -Remove
+```
+
+任务在当前用户交互登录后启动，不设置 Windows 自动登录、不修改锁屏或睡眠策略。微信需要扫码或手机确认时由本人完成。当前没有 Windows Session 0 服务或 Linux 无桌面部署验收。
+
+## 群指令
+
+以下是当前路由实现的命令，真实群效果以兼容表为准。默认要求通过微信成员选择器产生的真实 @，随后输入命令；手打相同昵称不提供权限。命令须为独立文本，引用、转发、XML 内嵌文字不进入游戏。每位成员默认 1 秒冷却。
+
+| 群输入（前置真实 @机器人） | 已实现的处理 |
+| --- | --- |
+| `帮助` | 显示已启用功能 |
+| `随机zxj` | 按原生成员 ID、北京时间每日保存一次；同日返回原结果，可用来复查当天结果 |
+| `我的zxj` / `我的zxj 2` | 每页 10 条历史，显示日期、结果、总数及页码 |
+| `猜词` / `猜词 5` | 每群一局；已有活跃局展示原棋盘 |
+| `我猜是 apple` | 多人共用六次有效猜测；无效、未收录或重复词不扣次数；回复该次棋盘 PNG |
+| `猜词棋盘` | 查询当前/最近一局棋盘，不消耗猜测次数 |
+| `猜词战绩` | 查询当前群中本人猜中次数 |
+| `结束猜词` | 开局者或配置主人结束该群当前局 |
+| `添加表情包` | 开启该群、该成员 60 秒的原生表情上传等待，需先启用表情功能 |
+| `取消添加` | 取消本人的等待 |
+| `随机表情包` | 从本群持久库选取资源，通过原生表情接口发送 |
+| `我的表情包` / `我的表情包 2` | 分页查询本人在本群的条目编号 |
+| `删除表情包 12` | 添加者或配置主人删除条目，同时取消对应尚未开始发送的待发项 |
+
+Wordle 复用原规则、词库及绘图，当前本地答案池仅开放长度 5。首次猜中者获得一场胜利；重投同一原生消息不重复结算。每个待发 PNG 保存独立棋盘快照；稍后的猜测不改写此前回复内容。
+
+表情等待按账号、群和成员隔离；普通图片/文字不会入库。只有取得原件、校验并持久保存成功才回复添加成功，同群按资源摘要去重。代码支持完整 GIF 原件及明确说明的 PNG→GIF 转换；WXGF 和未支持的商店/加密资源返回失败。发送资源限制为不超过 1 MiB、1024 像素、300 帧及累计 64 Mi 像素，属于当前实现限制。动画效果和重启后原生重发均待手机端验收。删除先移出随机池，保留物理文件以避免删除仍被待发回复引用的资源；当前没有自动磁盘回收任务。
+
+## 事务、重试与恢复
+
+`inbox` 去重键为 `(helper.native_text, account_id, chat_id, native_message_id)`。游戏写入、处理结果、事件完成标记与有序 outbox 共用同一个 SQLite 连接和事务。PNG 渲染、媒体下载和原生发送在事务外执行。普通无关群聊不写入业务 inbox；本项目轮转业务日志记录事件状态与错误，账号配置和资源凭据留在被 Git 忽略的本地目录。
+
+outbox 状态为 `pending / sending / accepted / failed / uncertain / expired`。明确尚未提交且可重试的失败，最多执行配置中的 3 次发送尝试，使用已保存的结果。原生调用已发生但结果不明，或重启时仍为 `sending`，转为 `uncertain` 并停止自动重发。`accepted` 只表示上游确认层级，不表示对端已读。文本和图片有各自待发项。
+
+未处理命令默认超过 120 秒失效，待发回复默认超过 300 秒不补发；已提交业务状态保留，可重新查询当天 zxj、棋盘或战绩。账号和当前白名单在发送前再次检查，新连接使用新连接标识。重启取消尚未收到表情的上传等待；已经收到并保存上传意图的事件保留，在命令有效期内重新核对归属后续处理。
+
+连接中断按有限退避处理。原 PID 失效时，代码只读检查受支持构建的候选进程，必须唯一匹配已绑定账号才重新连接；不自动接受其他账号。原生接收报告间断或持久化失败进入 `DEGRADED`，保留已有数据并停止继续处理，需要检查错误后重启。断线期间未被桥接捕获的消息没有历史补拉。微信退出、注销、睡眠与掉登录期间不提供收发；恢复及远程桌面断开的实测结果见兼容表。
+
+微信更新后重新执行 `doctor`。核心指纹不匹配进入 `VERSION_UNSUPPORTED`，停止加载/发送并保留数据库。取得新的上游适配后更新固定提交及摘要，再做真实文本/图片验证。本项目不降级微信、不修改更新策略、不删除构建校验。
+
+## 文件职责与数据
+
+调用关系：`wechat_bot.__main__ → Runtime → helper_native 接收 → Router → zxj / Wordle / stickers → SQLite outbox → 渲染与原生发送`。helper 的默认应用入口与插件管理器不启动；防撤回、朋友圈、图库和自动加好友插件不进入运行链。
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/wechat_bot/__main__.py`、`config.py` | 本机命令、绑定、配置校验与状态读取 |
+| `src/wechat_bot/adapters/helper_native.py`、`gateway.py` | 固定依赖/客户端指纹检查、账号连接、实际消息转换、文本/真实 @/PNG/原生表情接口 |
+| `src/wechat_bot/runtime.py` | 单实例、接收持久化、业务循环、发送队列、重连和正常退出 |
+| `src/wechat_bot/router.py`、`store.py` | 群白名单、权限、命令与统一数据库事务 |
+| `src/wechat_bot/stickers.py` | 成员等待、资源校验和原子落盘、持久库、随机选择及删除 |
+| `src/zxj/service.py`、`src/wordle/game.py`、`src/wordle/store.py` | 原规则与持久化；支持外部事务，原 CLI 独立运行 |
+| `src/wordle/render.py` | 从保存的棋盘快照绘图，不改变业务状态 |
+| `external/helper/` | 固定上游及必要 DLL、`run_selftest.py`、watchdog 和清理组件 |
+| `tests/test_bot.py`、`tests/test_stickers.py` | 四个整合场景；其余测试保留旧游戏和读取回归 |
+
+默认配置位于 `runtime/config.bot.toml` 时：
+
+| 位置 | 内容 |
+| --- | --- |
+| `runtime/bot.sqlite3` | 账号绑定、inbox、zxj/Wordle、outbox、表情元数据与暂停设置 |
+| `runtime/media/wordle/` | 每个待发项对应的棋盘 PNG |
+| `runtime/media/stickers/` | 持久表情资源；不作为临时缓存清空 |
+| `runtime/status.json`、`bot.lock`、`stop.request` | 状态、单实例锁和停止请求 |
+| `runtime/logs/` | 轮转业务日志和各次启动输出 |
+| `runtime/backups/` | 覆盖配置前保留的备份；数据库备份应使用 SQLite backup API 或正常停止后复制 |
+| `runtime/acceptance.md` | 本机验收记录（包含真实身份的信息仅留本地） |
+| `runtime/zxj.sqlite3`、`wordle.sqlite3`、`boards/` | 原本地 CLI 数据与历史验收；不自动迁移为真实微信身份 |
+
+`.venv/`、`.python/`、旧配置和验收记录保留。备份机器人时同时保存数据库、配置和 `media/stickers/`；不要仅保留条目而删除原件。未涉及大模型部署、长期群聊记忆或私人自动执行助手。
+
+本地游戏与旧诊断入口继续可用：
+
+```powershell
+.\.venv\Scripts\python.exe -m zxj draw --user alice
+.\.venv\Scripts\python.exe -m zxj history --user alice
 .\.venv\Scripts\python.exe -m wordle --help
 .\.venv\Scripts\python.exe -m wechat_reader --help
 ```
 
-## 随机 zxj
+旧游戏 `--data-dir` 相对运行时当前目录解析；机器人配置中的 `data_dir` 相对配置目录解析。详细旧 CLI 和 OCR 限制见 v0.1.0 验收记录。
+
+## 验证记录与剩余验收
 
 ```powershell
-.\.venv\Scripts\python.exe -m zxj draw --user alice
-.\.venv\Scripts\python.exe -m zxj draw --user bob
-.\.venv\Scripts\python.exe -m zxj history --user alice
-.\.venv\Scripts\python.exe -m zxj history --user alice --limit 10
+.\.venv\Scripts\python.exe -m pytest -q --basetemp runtime/test-v020 -p no:cacheprovider
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-每人按北京时间每日一次，同日返回数据库原结果；重启后历史保留。每天可随机得到相同字符串。服务支持可控时间用于测试，CLI 使用真实时间。
+2026-10-29 整合检查：`9 passed in 0.74s`，包括原 5 个有效测试与 4 个整合场景；`pip check` 通过。新增场景覆盖身份/@/权限、统一事务与发送不确定恢复、多人游戏与独立棋盘快照、表情等待隔离/持久资源。测试使用临时数据库与模拟原生事件，未修改旧运行数据。`--basetemp` 只用于指定测试目录，该目录会被 pytest 重新创建，不要指向实际运行数据目录。
 
-## Wordle
+最短真实链路已取得群与主人私聊的新事件、原生身份和提及字段；群文本/PNG 发送已获手机确认。首次真实 @ 发送缺少 SDK 要求的显示标签，手机端检查失败；补齐标签并保留原生提及列表后再次发送，用户确认真正提及成功。`start.ps1` 隐藏启动完整机器人至 `READY`，正常停止及桥接卸载均已实际执行。
 
-```powershell
-.\.venv\Scripts\python.exe -m wordle start --group demo --user alice --length 5
-.\.venv\Scripts\python.exe -m wordle guess --group demo --user bob alley
-.\.venv\Scripts\python.exe -m wordle guess --group demo --user carol apple
-.\.venv\Scripts\python.exe -m wordle board --group demo
-.\.venv\Scripts\python.exe -m wordle stats --user bob
-.\.venv\Scripts\python.exe -m wordle end --group demo --user alice
-# 历史棋盘：把 1 换成该群的实际对局编号
-.\.venv\Scripts\python.exe -m wordle board --group demo --game 1
-```
-
-每群同时一局，玩家共用六次有效猜测。非法、词库未收录和重复猜测不扣次数；首次猜中者获一次胜场。`end` 由开局者操作；已结束的局不重复结算。答案池 609 词，允许猜测 626 词，**当前只有长度 5 可用**；添加本地答案词后才开放对应的 3–10 长度。
-
-上述猜测是操作示例，随机答案不固定；若猜中后再执行 `end`，会明确提示已结束。活跃局的 CLI 和 PNG 不显示答案；SQLite 保存答案供判色和重建棋盘，是本地游戏存储。
-
-## 微信当前状态与运行条件
-
-| 实际版本 / 日期 | 后端 | 群聊 | 私聊 | 已观察条件与限制 |
-| --- | --- | --- | --- | --- |
-| 4.1.15.13 / 2026-10-29 | 私聊 `uia-visible`；群聊 `uia-visible+windows-ocr` | UIA 正文、两位成员同文快照与受限 OCR 标签已实测；滚动、遮挡停止、重启重新选择通过 | 可见区域文本与连续同文增量已实测 | 窗口保持未最小化、目标会话打开；群聊截图区域无遮挡，深色主题、150% 显示缩放；视口变化会中断增量观察 |
-
-正文直接来自 `mmui::RecyclerListView`（`chat_message_list`）中 `ListItem` 的 `mmui::ChatTextItemView.name`；私聊与群聊类型分别由 `mmui::ChatTitleBarChatSingleView`、`mmui::ChatTitleBarChatRoomView` 识别。该消息列表未暴露 ScrollPattern，因此实现仅读取与列表视口相交的消息行，不判断是否已处于历史底部。
-
-群消息的发送者标签未通过本次 UIA、Legacy 接口或原始子节点检查获得。群聊读取在 UIA 正文之外，用系统 Windows OCR 识别行上方的显示标签，保留原始识别字符串并设置 `sender_display_name_source="windows-ocr"`。两位测试成员的标签可作本轮受限区分，其中带特殊符号的标签存在识别错误；同一成员的标签在不同快照中出现 `.` 与 `•` 两种原始输出，识别结果不稳定。用户已明确接受“接受本轮两位成员的受限区分，保留OCR限制”；这项验收只覆盖本轮两位成员，标签有误字、同名及改名歧义，不提供稳定身份映射。
-
-```powershell
-.\.venv\Scripts\python.exe -m wechat_reader doctor
-# 先手工恢复微信，打开允许读取的目标私聊，再明确选择窗口和会话
-.\.venv\Scripts\python.exe -m wechat_reader select --config runtime/config.private.toml --expected-type private
-.\.venv\Scripts\python.exe -m wechat_reader watch --config runtime/config.private.toml
-# 手工打开目标群后选择；按需显示初始/间断时的可见快照
-.\.venv\Scripts\python.exe -m wechat_reader select --config runtime/config.group.toml --expected-type group
-.\.venv\Scripts\python.exe -m wechat_reader watch --config runtime/config.group.toml --show-snapshots
-# 本机 2026-10-29 微信完整重启后重新选择的群配置
-.\.venv\Scripts\python.exe -m wechat_reader watch --config runtime/config.zhbot.local.toml --show-snapshots
-```
-
-`doctor` 默认把不含消息正文的诊断写入 `runtime/doctor.json`，包括实际版本、依赖、候选窗口。检测失败时 `--reported-version 版本号` 单独保存人工记录，不替代实际检测。`select` 必须明确选择窗口，即使只有一个也不自动默认选择；随后读取并确认实际会话标题，自动填入已观察到的控件规则。`expected_type` 仅保存用户预期，实际事件的 `detected_chat_type` 由界面结构独立探测：`private`、`group`，无法唯一判断时为 `null`。
-
-日常运行时，手工滚到目标会话的最新消息，保持微信未最小化，并避免移动、缩放窗口或滚动消息区域。开始观察后，由用户或测试伙伴发送消息；初始快照只建立基线。`watch` 不调用切换聊天、焦点、滚动、剪贴板或发送接口。微信更新可正常进行，本项目不修改客户端或更新设置；未来版本兼容性尚未验证，更新后重新运行 `doctor/select`，按实际界面验证。
-
-群聊 OCR 需要消息区域未被其他窗口遮挡。后台窗口截图在本次探测中得到黑图，当前实现只截取屏幕上所选消息区域；已实测浏览器遮挡消息区域后明确退出，提示移开遮挡窗口。适配基于本次深色主题和 150% 显示缩放，其他主题/显示缩放组合尚未验收。私聊沿用 UIA 读取，不调用 OCR。OCR 在本机内存中处理，不上传图片，正常生产路径不保存截图。
-
-UIA 正文读取和截图并非同时发生，两者之间滚动可能导致正文与 OCR 标签错配。代码已增加截图前后的消息行签名、视口与会话检查：检测到变化时丢弃本次内容，报告 `gap` 后重新建立基线。这条处理路径的最小回归已通过。
-
-有序差分保留同文的出现次数。共同消息行的坐标变化、旧行移出视口、快照缺失或无法完整对齐时，返回 `gap`，清除旧基线；下一次成功快照仅重新建立基线，**期间的消息可能漏读，不补收历史**。新消息使窗口自动滚动或列表视口填满时，同样可能触发此限制；当前实现不能提供连续完整消息流。
-
-空视口随后首次出现内容时，无法区分初始加载与新消息，这批内容仅用于重新建立基线，可能不输出首条到达的消息。无法匹配正文的可见行以 `message_type="unknown"`、`text=null` 记录，不解释为已识别的文本消息。
-
-`--show-snapshots` 在 `baseline/gap` 时额外输出当前可见行，明确标记 `observation_kind="snapshot"`；只有有序追加事件标记为 `"new"`。快照可能重复显示历史行并生成新的本地事件 ID，滚动快照不表示新消息，也不表示补齐漏读。
-
-本轮群聊运行中，手工上滚再回到底部各触发一次 `gap → baseline`，只显示 `snapshot`，没有产生 `new` 事件。新群消息与视口滚动检查也实际触发截图前后行/视口变化：本次内容被丢弃，随后在基线快照中读到新正文。这次检查同样没有产生 `new` 事件。
-
-每次读取前后核对窗口/进程绑定和会话；绑定或标题变化时停止，不转向另一个会话。每次查询限时 12 秒，超时仅结束本项目的查询子进程。已实测切换到文件传输助手后因标题不符退出；窗口最小化时读取也明确退出。账号切换、同名会话、同时观察群私聊尚未实测；账号切换后需停止并重新选择。同机双账号共存已从验收中移除，不执行相关测试。
-
-已实测微信完整退出时，正在运行的观察进程报“窗口已关闭，请重新 select”并退出；重启后沿用旧配置也明确失败。`doctor` 读到新的窗口句柄、进程和启动时间，版本仍为 4.1.15.13；已重新 `select` 保存 `runtime/config.zhbot.local.toml`，新观察进程成功建立 `baseline`。后续客户端退出、重启或绑定变化时，都需重新选择当前目标窗口。
-
-私聊发送者显示名仍为 `null`；群聊单行未取得标签时也为空，OCR 执行失败则停止读取并报告原因。原生发送者 ID、原生消息 ID、原生发送时间均为 `null`；`observed_at` 是程序观察时间。本地账号/会话别名、OCR 标签、HWND、UIA runtime ID 和本地 `event_id` 均不作为原生微信身份。默认只在终端输出；只有传入 `watch --jsonl runtime/observations.jsonl` 才保存观察记录，其中也会保留已启用的 `snapshot/new` 区分。Ctrl+C 退出。
-
-如果后续客户端的控件变化，可用以下命令保存所选窗口的实际 UIA 文字。用 `doctor` 返回的当前句柄替换占位值；文件可能包含聊天内容，保存在被 Git 忽略的 `runtime/`。
-
-```powershell
-.\.venv\Scripts\python.exe -m wechat_reader doctor --hwnd <实际HWND> --include-text --output runtime/private-uia.json
-```
-
-定位属性集中在 `profiles.py`；`title/messages` 须唯一，`row` 匹配列表直接子项，`text` 匹配行自身或行内正文。群聊 OCR 标签截取在 `ocr.py`，保持与游戏业务分离。
-
-## 文件职责和数据位置
-
-| 调用路径 | 职责 |
-| --- | --- |
-| `zxj/__main__.py → service.py → zxj.sqlite3` | 参数/输出；北京时间与抽取事务、历史；`characters.json` 维护三组单字 |
-| `wordle/__main__.py → game.py → store.py → wordle.sqlite3` | 参数/输出；校验、判色、状态；SQL 事务及胜场统计；`words.json` 维护离线词库 |
-| `wordle/__main__.py → render.py → PNG` | 只读取棋盘状态绘图，不改变游戏或战绩 |
-| `wechat_reader/__main__.py → backend.py/profiles.py → reader.py` | 命令/配置；真实 UIA 与定位规则；快照差分和观察字段；不调用小游戏 |
-| `wechat_reader/backend.py → ocr.py → windows_ocr.ps1` | 群聊所选区域截图；标签裁剪和原始识别结果；调用本机 Windows OCR，图像只在内存中传递 |
-
-两个游戏都支持 `--data-dir 路径`，放在子命令前后均可。默认相对**运行时当前目录**的 `runtime/`，启动会显示解析后的绝对路径；从本项目根运行时：
-
-- `runtime/zxj.sqlite3`：每日抽取与历史。
-- `runtime/wordle.sqlite3`：对局、参与玩家、UTC 时间、猜测和胜场来源。
-- `runtime/boards/wordle-<对局>-<次数>-<状态>.png`：每次有效操作/重绘的棋盘，不自动弹窗。
-- `runtime/config.zhbot.local.toml`：本次客户端完整重启后重新选择的群配置；仅供本机使用，绑定失效后重新选择。
-- `runtime/config.private-20261029.toml`：保留的历史私聊配置；客户端重启后应重新 `select`。
-- `runtime/config*.toml`、`runtime/doctor*.json`：本机定位与诊断；群/私聊可使用分别命名的配置。
-- `runtime/group-visible-probe.png`：本轮保留的临时群聊探测画面，含聊天内容，不进入 Git；正常生产 OCR 路径不保存截图。
-- `runtime/stage-b-check/zxj.sqlite3` 与 `runtime/wordle.sqlite3` 中的 `validation-wordle`：本轮实际运行记录，已保留。Wordle 验证局已由开局者结束。
-- `dist/astra_wechat_lab-0.1.0-py3-none-any.whl`：保留的本轮构建产物，包含三个包与所需资源。
-
-这些数据、Python 环境与缓存均不进入 Git。输出重定向到工具管道若出现编码问题，可在当前 PowerShell 设置 `$env:PYTHONIOENCODING='utf-8'`，不改变系统设置。
-
-## 验证
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-2026-10-29 最终自动化检查：`5 passed in 0.18s`。保留原三个核心场景：zxj 日期/独立用户/持久化；Wordle 重复字母判色；Wordle 多人状态/重启/六次失败。另有两个最小接收回归：视口变化后的间断与重建基线，以及截图期间行移动/替换时丢弃内容。自动化使用临时数据库与人工快照，不修改运行记录。
-
-人工检查记录：
-
-- 2026-10-29 私聊：初始快照读到 `接受测试A-1029`；实时 `watch` 收到 `重复测试b-1029` 一条、`重复测试C_1029` 两条，后两条具有不同本地事件 ID。观察进程重启先建立基线、未重放历史，随后读到 `最终验证D-1029` 和一条 `unknown` 行；`--once` 基线检查通过。切换会话及最小化停止已观察。
-- 2026-10-29 群聊：UIA 准确读出 `成员A-1029`、`成员B-1029` 两条不同正文；两位成员的不同 OCR 原始标签作受限区分已获用户接受，保留特殊符号识别错误。浏览器遮挡消息区域后明确停止。手工上滚和回到底部触发两次 `gap → baseline`，无 `new` 事件，仅输出可见快照。
-- 2026-10-29 客户端完整重启：原观察进程及旧配置均因窗口关闭明确失败；`doctor` 确认新窗口/进程/启动时间，微信仍为 4.1.15.13；已重新选择目标群，保存本地配置并成功建立 `baseline`。
-- 2026-10-29 最终群聊检查：`滚动验证S-1029` 到达期间触发截图前后行/视口变化，丢弃本次内容后，在 `baseline` 的 `snapshot` 中读到正文。随后两位成员各发 `同文验证H-1029`，可见快照同时保留两条相同正文和不同的 OCR 原始标签，下一次基线仍保留两条。这些检查出现 `gap → baseline`，共 0 条 `new` 事件；验收范围是可见快照的正文保留与本轮两成员受限区分。
-- 2026-10-25 PNG：已打开正常对局图片，六行、字母、颜色与边界无裁切。
-
-2026-10-25 的安装验证记录：`pip check` 未发现依赖冲突，三个入口帮助可运行。2026-10-29 最终 `uv build` 和 wheel 内容检查通过，包含最新截图一致性校验、`ocr.py`、`windows_ocr.ps1` 和游戏 JSON；构建中间目录已清理，运行数据保留。本轮增加对已安装 Windows OCR 的调用，未新增 Python 运行依赖；本机可用语言为 `en-US`、`zh-Hans-CN`、`de-DE`，当前标签识别使用 `en-US`。第三方来源与许可见 `THIRD_PARTY_NOTICES.md`。本轮验收已完成，无延期项；适用范围限于上述实际版本、界面条件与用户接受的 OCR 限制。
+当前已通过窗口状态工具确认微信最小化，尚未收到用于完整游戏验收的新指令，最小化收发结果仍待检查。第二名测试成员暂不可用。剩余三段真机验收：A 群内 zxj/Wordle 完整游玩、双成员身份与接力、原生表情入库及重启重发；B 未展开会话、遮挡、最小化、锁屏、实际远程断开逐项核心收发；C 游戏状态重启保留、微信掉线和同账号恢复。具体 PASS/FAIL/NOT_TESTED 以 [COMPATIBILITY.md](docs/COMPATIBILITY.md) 为准。

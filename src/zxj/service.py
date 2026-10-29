@@ -1,6 +1,6 @@
 """Beijing-day draws and their small SQLite store."""
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from importlib.resources import files
 import json
@@ -21,25 +21,45 @@ def _characters() -> dict[str, list[str]]:
     return groups
 
 
+def initialize_schema(connection: sqlite3.Connection) -> None:
+    """Create tables without committing the caller's transaction."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS draws (
+            user_id TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            result TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL,
+            PRIMARY KEY (user_id, business_date)
+        )"""
+    )
+
+
 def _connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
     connection.row_factory = sqlite3.Row
     try:
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS draws (
-                user_id TEXT NOT NULL,
-                business_date TEXT NOT NULL,
-                result TEXT NOT NULL,
-                created_at_utc TEXT NOT NULL,
-                PRIMARY KEY (user_id, business_date)
-            )"""
-        )
+        initialize_schema(connection)
     except Exception:
         connection.close()
         raise
     return connection
+
+
+@contextmanager
+def _transaction(db_path, connection):
+    if connection is not None:
+        if not connection.in_transaction or connection.row_factory is not sqlite3.Row:
+            raise ValueError("外部连接需要已开启事务及 sqlite3.Row row_factory")
+        # The inbox/business/outbox owner controls this transaction's lifecycle.
+        yield connection
+        return
+    if db_path is None:
+        raise ValueError("需要 db_path 或外部 connection")
+    with closing(_connect(db_path)) as owned, owned:
+        owned.execute("BEGIN IMMEDIATE")
+        yield owned
 
 
 def _validate_user(user_id: str) -> None:
@@ -47,11 +67,14 @@ def _validate_user(user_id: str) -> None:
         raise ValueError("用户 ID 不能为空")
 
 
-def draw(user_id: str, db_path: str | Path, now: datetime | None = None) -> dict:
+def draw(user_id: str, db_path: str | Path | None = None, now: datetime | None = None,
+         *, connection: sqlite3.Connection | None = None) -> dict:
     """Return the saved daily draw, with ``is_first`` for this request.
 
     ``now`` is an aware datetime for controlled tests; the CLI always uses the
     real clock. Persisted UTC time and the Beijing business date are distinct.
+    An external connection must have an active transaction, sqlite3.Row, and
+    initialized tables. Its caller owns commit, rollback and close.
     """
     _validate_user(user_id)
     instant = datetime.now(UTC) if now is None else now
@@ -59,9 +82,7 @@ def draw(user_id: str, db_path: str | Path, now: datetime | None = None) -> dict
         raise ValueError("now 必须是带时区的 datetime")
     business_date = instant.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
-    with closing(_connect(db_path)) as connection, connection:
-        # Serialize lookup and insertion so concurrent requests return one saved draw.
-        connection.execute("BEGIN IMMEDIATE")
+    with _transaction(db_path, connection) as connection:
         existing = connection.execute(
             "SELECT * FROM draws WHERE user_id = ? AND business_date = ?",
             (user_id, business_date),
@@ -84,15 +105,41 @@ def draw(user_id: str, db_path: str | Path, now: datetime | None = None) -> dict
         return {**record, "is_first": True}
 
 
-def history(user_id: str, db_path: str | Path, limit: int | None = None) -> list[dict]:
+def history(user_id: str, db_path: str | Path | None = None, limit: int | None = None,
+            *, offset: int = 0, connection: sqlite3.Connection | None = None) -> list[dict]:
     """Return newest-first saved draws; omit ``limit`` to query all dates."""
     _validate_user(user_id)
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("limit 必须是正整数")
+    if type(offset) is not int or offset < 0:
+        raise ValueError("offset 必须是非负整数")
     query = "SELECT * FROM draws WHERE user_id = ? ORDER BY business_date DESC"
     params: tuple = (user_id,)
-    if limit is not None:
-        query += " LIMIT ?"
-        params += (limit,)
-    with closing(_connect(db_path)) as connection:
+    if limit is not None or offset:
+        query += " LIMIT ? OFFSET ?"
+        params += (limit if limit is not None else -1, offset)
+    with _transaction(db_path, connection) as connection:
         return [dict(row) for row in connection.execute(query, params)]
+
+
+def history_count(user_id: str, db_path: str | Path | None = None,
+                  *, connection: sqlite3.Connection | None = None) -> int:
+    _validate_user(user_id)
+    with _transaction(db_path, connection) as connection:
+        return connection.execute("SELECT COUNT(*) FROM draws WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+
+def history_page(user_id: str, db_path: str | Path | None = None, *, page: int = 1,
+                 page_size: int = 10, connection: sqlite3.Connection | None = None) -> dict:
+    """Read a history page and its count from the same transaction snapshot."""
+    _validate_user(user_id)
+    if type(page) is not int or page < 1 or type(page_size) is not int or page_size < 1:
+        raise ValueError("page 和 page_size 必须是正整数")
+    with _transaction(db_path, connection) as connection:
+        total = history_count(user_id, connection=connection)
+        return {
+            "items": history(user_id, limit=page_size, offset=(page - 1) * page_size,
+                             connection=connection),
+            "total": total, "page": page, "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        }

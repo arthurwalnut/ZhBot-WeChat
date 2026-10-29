@@ -1,6 +1,6 @@
 # 第三方来源与许可
 
-本项目通过标准包依赖调用以下组件，没有复制其他微信机器人、NoneBot 或游戏项目的源码。版本来自本机项目虚拟环境；许可标识来自已安装发行包的元数据和附带许可文件。完整依赖约束见 `requirements-lock.txt`。
+本项目通过标准包依赖调用下列组件；v0.2.0 另在独立目录保留 helper 固定提交，说明见下文。版本来自本机项目虚拟环境；许可标识来自已安装发行包的元数据和附带许可文件。完整依赖约束见 `requirements-lock.txt`。
 
 | 组件 | 实测版本 | 包声明许可 | 用途与来源 |
 | --- | --- | --- | --- |
@@ -22,7 +22,7 @@ pytest 的解析、终端输出等传递依赖由包管理器安装，约束文�
 
 本机已观察到 `en-US`、`zh-Hans-CN`、`de-DE` 识别语言，当前群聊标签调用 `en-US`。生产 OCR 的图像在内存中编码并通过本机进程传递，不上传或写入截图文件；本轮另行保留的临时探测图为 `runtime/group-visible-probe.png`，含聊天内容且不进入 Git。识别输出保留原始标签和 `windows-ocr` 来源。OCR 输出仅用于用户接受的本轮两位成员受限区分，特殊符号误识别、同名、改名与界面可见性限制见 README。
 
-## 微信路线调查（未引入代码）
+## v0.1.0 微信路线调查（当时未引入代码）
 
 - [pywinauto 连接文档](https://pywinauto.readthedocs.io/en/latest/HowTo.html)支持按进程/窗口连接；本项目仅使用查询接口。
 - [Microsoft UIA provider 说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-providersoverview)说明控件通过 provider 暴露辅助功能信息。窗口可枚举不等于消息正文可读。
@@ -30,3 +30,22 @@ pytest 的解析、终端输出等传递依赖由包管理器安装，约束文�
 - [wxauto 安装说明](https://docs.wxauto.org/docs/install.html)的免费版兼容声明到 4.1.8.107；[wxauto4](https://github.com/cluic/wxauto4)显示停止更新。本项目未安装这些组件，未要求微信降级。
 
 上游来源与许可核查日期：2026-10-25。2026-10-29 本机微信 4.1.15.13 已按 README 记录的条件完成本轮受限验收，包括群内两位成员同正文的可见快照保留、受限 OCR 标签，以及滚动、遮挡、重启检查；群聊最终检查的新增内容通过 `snapshot` 读出，未记为 `new`。本轮延用上述 Python 依赖，增加 Windows 系统 OCR 调用，未复制第三方接收代码；最终 wheel 已确认包含本项目 OCR 封装、脚本和最新校验代码。
+
+## v0.2.0 helper 原生桥接
+
+来源：[Prometheus-first/helper](https://github.com/Prometheus-first/helper)，固定提交 `3e65e4bdaff438dc616f32d412175842fa138763`。源码、两个桥接 DLL、`LICENSE`、`THIRD_PARTY_NOTICES.md`、MinHook 1.3.4 源码和原许可保留于 `external/helper/`；获取脚本与摘要见 `external/helper.lock.json`、`scripts/fetch_helper.ps1`。
+
+helper 原创部分使用 `LicenseRef-helper-noncommercial-1.0`：个人学习、研究、测试、娱乐和非商业自用；不授予商业使用权，免费分享须保留协议与声明。本项目没有把它重新标成 MIT 或 Apache。完整条款以随源码保留的 LICENSE 为准。两个 DLL 取自固定提交；上游声明由其原生源码和 MinHook 构建，本轮没有独立复现构建。
+
+适配器直接调用后端与单条表情资源工具，不启动上游默认插件。必要的 run_selftest、桥接守护及原生生命周期文件完整保留。源码接口检查与真实兼容结果分别见 `docs/NATIVE_API.md`、`docs/COMPATIBILITY.md`。
+
+新增已安装依赖（许可取自本机发行包元数据）：
+
+| 包 | 版本 | 许可 | 用途 |
+| --- | --- | --- | --- |
+| pefile | 2023.2.7 | MIT | 原生 PE / 版本核验 |
+| cryptography | 49.0.0 | Apache-2.0 OR BSD-3-Clause | 上游表情模块导入与格式处理 |
+| cffi | 2.1.1 | MIT-0 | cryptography 依赖 |
+| pycparser | 3.12 | BSD-3-Clause | cffi 依赖 |
+
+现有 Pillow 13.0.0 保留；没有按上游全功能 requirements 降级现有环境，也没有安装本轮不使用的语音、模型或 FFmpeg 依赖。完整依赖许可文件保留在各自 dist-info 目录。
