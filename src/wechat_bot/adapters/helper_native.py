@@ -369,7 +369,11 @@ class HelperNative:
         resources = _sticker_helpers(self.root)
         item = resources.Sticker(**media["sticker"])
         current = lambda: bool(event.connection_id == self.connection_id and self.health()["connected"])
-        data = resources.download_sticker(item, current)
+        try:
+            data = resources.download_sticker(item, current)
+        except resources.StickerError as error:
+            # Upstream's resource errors are fixed messages, with URLs and keys omitted.
+            raise GatewayError("MEDIA_DOWNLOAD_FAILED", str(error)) from None
         if data.startswith(b"wxgf"):
             raise GatewayError("MEDIA_UNSUPPORTED", "WXGF 尚未启用转换；不改变原动画播放时长")
         if data.startswith((b"GIF87a", b"GIF89a")):

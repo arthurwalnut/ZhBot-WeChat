@@ -8,7 +8,7 @@ from PIL import Image
 import pytest
 
 from wechat_bot.config import Config
-from wechat_bot.gateway import Event, SendResult
+from wechat_bot.gateway import Event, GatewayError, SendResult
 from wechat_bot.runtime import Runtime
 
 
@@ -74,7 +74,9 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
         event(12, text="暂停群功能", chat_type="private", chat_id="wxid_bob", sender="wxid_bob"),
     ):
         runtime.receive(value)
-    assert len(rows(runtime, "inbox")) == 3 and len(rows(runtime, "draws")) == 2
+    assert len(rows(runtime, "inbox")) == 4 and len(rows(runtime, "draws")) == 2
+    assert runtime.router.process_one(Event)  # Explicitly mentioned unknown text gets help.
+    assert '帮助' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
     private = dict(chat_type="private", chat_id="wxid_owner", sender_id="wxid_owner", mentioned_ids=())
     process(runtime, event(13, text="暂停群功能", **private))
     assert not runtime.receive_error  # Stickers enabled must not treat private IDs as a group.
@@ -83,6 +85,8 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     process(runtime, event(15, text="恢复群功能", **private))
     process(runtime, event(16, sender="wxid_carol"))
     assert len(rows(runtime, "draws")) == 3
+    process(runtime, event(17, text=''))
+    assert '帮助' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
     assert all(item["chat_id"] in {"123@chatroom", "wxid_owner"} for item in rows(runtime, "outbox"))
 
 
@@ -139,10 +143,14 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     runtime = setup(tmp_path, stickers=True, gateway=gateway)
     runtime.router.game.answer_picker = lambda _: "apple"
     process(runtime, event(1, "猜词"))
+    for identifier, malformed in ((100,"我猜是"),(101,"我猜是 apple extra")):
+        process(runtime,event(identifier,malformed))
+        assert rows(runtime,"guesses") == []
+        assert '格式：我猜是 apple' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
     process(runtime, event(2, "我猜是 alley"))
     # A second member can continue the same persisted game after process restart.
     runtime = Runtime(runtime.config, gateway)
-    winner = event(3, "我猜是 apple", sender="wxid_bob")
+    winner = event(3, "我猜是apple", sender="wxid_bob")
     process(runtime, winner)
     runtime.receive(winner)
     assert not runtime.router.process_one(Event)
@@ -176,6 +184,16 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     Image.new("RGB", (8, 8), "red").save(gif, format="GIF")
     process(runtime, event(7, "添加表情包"))
     runtime.receive(event(8, message_type="sticker", text="", mentioned_ids=()))
+    # Simulate downtime longer than the ordinary command TTL, preserving the
+    # already accepted upload's original arrival within its 60-second wait.
+    with runtime.store.transaction() as connection:
+        accepted = connection.execute("SELECT id,payload FROM inbox WHERE native_message_id='8'").fetchone()
+        payload = json.loads(accepted['payload'])
+        payload['received_at'] -= 1000
+        for name in ('received_at','wait_started_at','wait_expires_at'):
+            payload['sticker_intent'][name] -= 1000
+        connection.execute('UPDATE inbox SET received_at=?,payload=? WHERE id=?',
+                           (payload['received_at'],json.dumps(payload),accepted['id']))
     # The receive intent has committed, but no bytes have been downloaded. A
     # subsequent connection must resume the same upload with fresh ownership.
     gateway = FakeGateway()
@@ -183,6 +201,7 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     def fetch(upload):
         assert upload.connection_id == gateway.connection_id
         assert upload.account_id == "wxid_robot" and upload.chat_id == "123@chatroom"
+        assert time.time()-upload.received_at > runtime.config.max_command_age_seconds
         return {"data": gif.getvalue(), "source_format": "GIF"}
     gateway.fetch_sticker = fetch
     runtime = Runtime(runtime.config, gateway)
@@ -194,3 +213,19 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     native = [item for item in gateway.sent if item.kind == "sticker"]
     assert len(native) == 1 and Path(native[0].path).read_bytes() == gif.getvalue()
     assert native[0].chat_id == "123@chatroom"
+
+    # Safe media reasons reach the reply; arbitrary exception payloads do not.
+    for identifier, failure, expected in (
+        (10, GatewayError('MEDIA_UNSUPPORTED','WXGF 尚未启用转换；不改变原动画播放时长'), 'WXGF 尚未启用转换'),
+        (12, GatewayError('MEDIA_DOWNLOAD_FAILED','表情包内容校验失败或连接已结束'), '表情包内容校验失败'),
+        (14, GatewayError('MEDIA_UNSUPPORTED','https://cdn.invalid/?token=secret <xml>secret</xml>'), 'GatewayError'),
+    ):
+        process(runtime,event(identifier,'添加表情包'))
+        runtime.receive(event(identifier+1,message_type='sticker',text='',mentioned_ids=()))
+        def failed_fetch(_):
+            raise failure
+        gateway.fetch_sticker = failed_fetch
+        assert runtime.process_one()
+        response = json.loads(rows(runtime,'outbox')[-1]['payload'])['text']
+        assert expected in response and 'secret' not in response and 'https:' not in response and '<xml>' not in response
+        assert len(rows(runtime,'stickers')) == 1

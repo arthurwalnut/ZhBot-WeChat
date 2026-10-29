@@ -9,7 +9,8 @@ from wordle.game import WordleService, GameError
 from .store import BotStore
 
 ADMIN = {"机器人状态", "暂停群功能", "恢复群功能"}
-COMMAND = re.compile(r"(?:帮助|随机zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是 [A-Za-z]+|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
+COMMAND = re.compile(r"(?:帮助|随机zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是[^\r\n]{0,128}|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
+GUESS = re.compile(r"我猜是[ \t\u3000]*([A-Za-z]+)\Z")
 
 
 def command_text(event):
@@ -39,7 +40,9 @@ class Router:
             return event.text.strip() in ADMIN
         if self.config.require_native_mention and self.config.account_id not in event.mentioned_ids:
             return False
-        return bool(COMMAND.fullmatch(command_text(event)))
+        # Unknown text explicitly addressed to this bot gets a short help reply.
+        # When mention gating is disabled, ordinary unaddressed chat is still ignored.
+        return bool(COMMAND.fullmatch(command_text(event))) or self.config.account_id in event.mentioned_ids
 
     def handle(self, c, event):
         cfg = self.config
@@ -65,13 +68,15 @@ class Router:
         if event.received_at - previous < cfg.per_user_cooldown_seconds:
             return []
         BotStore.set_setting(c,key,event.received_at)
+        if not COMMAND.fullmatch(text):
+            return reply("未识别指令。请发送「帮助」查看用法；例如「我猜是apple」。")
         try:
             if text == "帮助":
                 commands = ["帮助"]
                 if cfg.zxj:
                     commands += ["随机zxj", "我的zxj [页码]"]
                 if cfg.wordle:
-                    commands += ["猜词 [5]", "我猜是 apple", "猜词棋盘", "猜词战绩", "结束猜词"]
+                    commands += ["猜词 [5]", "我猜是 apple（空格可省略）", "猜词棋盘", "猜词战绩", "结束猜词"]
                 if cfg.stickers and self.stickers:
                     commands += ["添加表情包", "取消添加", "随机表情包", "我的表情包 [页码]", "删除表情包 编号"]
                 return reply("请真实 @机器人 后输入：\n" + "\n".join(commands))
@@ -89,8 +94,11 @@ class Router:
                 # An existing active game is shown without changing its answer.
                 current = self.game.store.load(c,event.chat_id,active_only=True)
                 board = self.game._board(current) if current else self.game.start(event.chat_id,event.sender_id,length,connection=c)
-            elif text.startswith("我猜是 ") and cfg.wordle:
-                board = self.game.guess(event.chat_id,event.sender_id,text.split()[1],connection=c)
+            elif text.startswith("我猜是") and cfg.wordle:
+                match = GUESS.fullmatch(text)
+                if not match:
+                    return reply("格式：我猜是 apple（空格可省略）。猜测只接受英文字母，不消耗机会。")
+                board = self.game.guess(event.chat_id,event.sender_id,match[1],connection=c)
             elif text == "猜词棋盘" and cfg.wordle:
                 board = self.game.current(event.chat_id,connection=c)
             elif text == "猜词战绩" and cfg.wordle:
@@ -142,7 +150,7 @@ class Router:
                 return False
             data = json.loads(row['payload'])
             event = event_class(**{k:v for k,v in data.items() if k in event_class.__dataclass_fields__})
-            if now - event.received_at > self.config.max_command_age_seconds:
+            if not data.get('sticker_intent') and now - event.received_at > self.config.max_command_age_seconds:
                 data['media_ref'] = None
                 c.execute("UPDATE inbox SET state='expired',payload=? WHERE id=?",(json.dumps(data,ensure_ascii=False),row['id']))
                 return True

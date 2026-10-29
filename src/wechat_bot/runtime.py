@@ -10,12 +10,29 @@ import threading
 import time
 
 from wordle.render import render_board
-from .gateway import Event, Outgoing
+from .gateway import Event, GatewayError, Outgoing
 from .router import Router
 from .store import BotStore
-from .stickers import StickerService
+from .stickers import StickerError, StickerService
 
 log = logging.getLogger("wechat_bot")
+
+# Only fixed, reviewed messages may enter a group reply. Other errors can carry
+# local paths, CDN URLs, XML or credentials, even when wrapped by a known class.
+_PUBLIC_MEDIA_REASONS = frozenset({
+    "表情事件账号或原生类型不符", "表情缺少可获取原件",
+    "表情元数据缺少受支持的原件地址、MD5或格式",
+    "WXGF 尚未启用转换；不改变原动画播放时长",
+    "原生 GIF 超过上游 1 MiB/1024 像素发送限制",
+    "该原生表情原件格式尚未支持",
+    "表情 GIF 必须非空且不超过 1 MiB", "原生表情资源必须是完整 GIF",
+    "表情超出 1024 像素、300 帧或累计像素限制", "表情 GIF 无法完整解码",
+    "当前仅接受 GIF 原件或已明确说明的 PNG 转换", "表情转换说明无效",
+    "表情保存目录发生重定向", "同摘要的现有表情文件内容不一致",
+    "表情包连接已结束", "表情包下载地址无效", "表情包下载地址不受支持",
+    "表情包响应超过大小限制", "表情包下载已取消或超时",
+    "表情包下载失败或超过支持范围", "表情包内容校验失败或连接已结束",
+})
 
 
 @contextmanager
@@ -98,7 +115,7 @@ class Runtime:
         data = json.loads(row['payload'])
         prepared = None
         media_error = None
-        if data.get('sticker_intent') and time.time()-row['received_at'] <= self.config.max_command_age_seconds:
+        if data.get('sticker_intent'):
             try:
                 event = Event(**{k:v for k,v in data.items() if k in Event.__dataclass_fields__})
                 if not self.router.in_scope(event) or not self.config.stickers:
@@ -107,7 +124,9 @@ class Runtime:
                 resource = self.gateway.fetch_sticker(event)
                 prepared = self.stickers.prepare(resource['data'],source_format=resource['source_format'],note=resource.get('note',''))
             except Exception as error:
-                media_error = "表情资源取得或持久保存失败：" + type(error).__name__
+                reason = str(error) if isinstance(error,(GatewayError,StickerError)) else ''
+                media_error = "表情资源取得或持久保存失败：" + (
+                    reason if reason in _PUBLIC_MEDIA_REASONS else type(error).__name__)
         with self.delivery_lock:
             return self.router.process_one(Event,prepared=prepared,media_error=media_error)
 
@@ -190,13 +209,16 @@ class Runtime:
             sender = threading.Thread(target=self._sender,name='bot-outbox',daemon=True)
             sender.start()
             attempts = 0
+            ready_since = None
             try:
                 while not self.shutdown.is_set() and not stop_file.exists():
                     if self.state != 'READY' and not self.receive_error:
                         try:
                             self.gateway.start(self.receive)
                             self.state,self.error = 'READY',''
+                            ready_since = time.monotonic()
                         except Exception as error:
+                            ready_since = None
                             self.state = getattr(error,'state','RECONNECTING')
                             self.error = str(error)
                             attempts += 1
@@ -209,6 +231,7 @@ class Runtime:
                             continue
                     health = self.gateway.health()
                     if not health.get('connected',False) and not self.receive_error:
+                        ready_since = None
                         if health.get('error') and not health.get('recoverable',False):
                             self.receive_error = True
                             self.state,self.error = 'DEGRADED','原生接收中断，可能存在缺口；请检查后重启'
@@ -222,6 +245,10 @@ class Runtime:
                             break
                         self.shutdown.wait(min(2**attempts,15))
                         continue
+                    # A brief successful start must not reset a flapping loop.
+                    # A later, separate outage gets a fresh budget after stability.
+                    if not self.receive_error and ready_since is not None and time.monotonic()-ready_since >= 30:
+                        attempts = 0
                     if self.receive_error:
                         self.state = 'DEGRADED'
                     else:
