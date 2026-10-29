@@ -10,7 +10,7 @@ import threading
 import time
 
 from wordle.render import render_board
-from .gateway import Event, GatewayError, Outgoing
+from .gateway import Event, GatewayError, Outgoing, SendResult
 from .router import Router
 from .store import BotStore
 from .stickers import StickerError, StickerService
@@ -95,15 +95,16 @@ class Runtime:
                              (event.account_id,event.chat_id,event.native_message_id)).fetchone():
                     return
                 payload = asdict(event)
+                accepted = self.router.accepts(event)
                 identity = dict(account_id=event.account_id,chat_id=event.chat_id,sender_id=event.sender_id,received_at=event.received_at)
-                if self.config.stickers and event.chat_type == 'group' and self.stickers.waiting(c,**identity) and not self.router.accepts(event):
+                if self.config.stickers and event.chat_type == 'group' and self.stickers.waiting(c,**identity) and not accepted:
                     if event.message_type == 'sticker':
                         payload['sticker_intent'] = self.stickers.claim(c,**identity,native_message_id=event.native_message_id,message_type='sticker')
                     else:
                         payload['wrong_sticker_type'] = True
                         payload['media_ref'] = None
                         payload['text'] = ''
-                elif not self.router.accepts(event):
+                elif not accepted:
                     return
                 c.execute("""INSERT INTO inbox (namespace,account_id,chat_id,native_message_id,received_at,payload)
                     VALUES ('helper.native_text',?,?,?,?,?)""",(event.account_id,event.chat_id,event.native_message_id,event.received_at,json.dumps(payload,ensure_ascii=False)))
@@ -150,7 +151,7 @@ class Runtime:
                 media_error = "表情资源取得或持久保存失败：" + (
                     reason if reason in _PUBLIC_MEDIA_REASONS else type(error).__name__)
         with self.delivery_lock:
-            return self.router.process_one(Event,prepared=prepared,media_error=media_error)
+            return self.router.process_one(prepared=prepared,media_error=media_error)
 
     def send_one(self, *, now=None):
         # Deletion and native submission share this lock. Receive persists separately.
@@ -193,7 +194,6 @@ class Runtime:
             if payload.get('board'):
                 path = str(render_board(payload['board'],self.config.data_dir / 'media/wordle' / f"reply-{row['id']}.png"))
         except Exception as error:
-            from .gateway import SendResult
             result = SendResult('failed',type(error).__name__,True)
         else:
             outgoing = Outgoing(account_id=row['account_id'],chat_id=row['chat_id'],chat_type=row['chat_type'],
@@ -202,7 +202,6 @@ class Runtime:
             try:
                 result = self.gateway.send(outgoing)
             except Exception as error:
-                from .gateway import SendResult
                 result = SendResult('uncertain',type(error).__name__,False)
         state = result.status
         if state == 'failed' and result.retryable and row['attempts']+1 < self.config.max_send_attempts:

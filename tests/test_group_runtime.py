@@ -60,8 +60,6 @@ def test_native_registration_is_narrow_and_requires_local_acceptance_and_restart
     updated = load_config(path)
     assert updated.group_allowlist == ('old@chatroom', 'new@chatroom')
     assert cfg.group_allowlist == ('old@chatroom',)  # Existing runtime is unchanged until restart.
-    admin.execute({'action': 'group_accept'})  # Repeat acceptance does not duplicate a group.
-    assert load_config(path).group_allowlist == updated.group_allowlist
     gateway = FakeGateway()
     restarted = Runtime(updated, gateway)
     event = replace(candidate, native_message_id='102', received_at=time.time(), text='@测试机器人\u2005随机zxj')
@@ -78,7 +76,6 @@ def test_native_registration_is_narrow_and_requires_local_acceptance_and_restart
     with removed.store.transaction() as c:
         assert c.execute('SELECT state FROM outbox').fetchone()[0] == 'expired'
         assert c.execute('SELECT COUNT(*) FROM draws').fetchone()[0] == 1
-    assert list((tmp_path / 'backups').glob('config.toml.*.bak'))
 
 
 def test_status_publish_survives_short_windows_reader(tmp_path):

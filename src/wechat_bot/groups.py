@@ -108,7 +108,7 @@ def _runtime(config):
     supported = record.get('enrollment_supported') is True
     return {'runtime_state': record.get('state', 'STOPPED'), 'applied_groups': applied,
             'restart_required': record.get('state') != 'READY' or not supported
-                                or applied != list(config.group_allowlist)}, supported
+                                or applied != list(config.group_allowlist)}
 
 
 def _status(connection, config):
@@ -120,8 +120,7 @@ def _status(connection, config):
         enrollment['state'] = record['state'] if _valid(record, now) else 'expired'
         if enrollment['state'] == 'waiting':
             enrollment['command'] = '登记群聊 ' + record['code']
-    status, _ = _runtime(config)
-    return dict(groups=list(config.group_allowlist), enrollment=enrollment, **status)
+    return dict(groups=list(config.group_allowlist), enrollment=enrollment, **_runtime(config))
 
 
 def _group_list(value, name):
@@ -143,12 +142,12 @@ def manage(connection, config, action, request):
     if action == 'group_status':
         return _status(connection, config)
     if action == 'group_begin':
-        runtime, supported = _runtime(config)
+        runtime = _runtime(config)
         if not config.owner_id:
             raise ValueError('先配置真实主人账号，才能使用群内登记')
         if runtime['runtime_state'] != 'READY':
             raise ValueError('先启动机器人并等待 READY，再生成登记码')
-        if not supported or runtime['restart_required']:
+        if runtime['restart_required']:
             raise ValueError('请先正常重启机器人，加载群登记功能和当前配置')
         now = time.time()
         _save(connection, dict(state='waiting', account_id=config.account_id, owner_id=config.owner_id,

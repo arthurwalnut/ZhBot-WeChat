@@ -1,4 +1,5 @@
 """Three integration scenarios using synthetic native fields, never live WeChat."""
+from contextlib import contextmanager
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -48,7 +49,7 @@ def rows(runtime, table):
 
 def process(runtime, value):
     runtime.receive(value)
-    assert runtime.router.process_one(Event)
+    assert runtime.router.process_one()
 
 
 def test_identity_native_mentions_scope_and_owner_management(tmp_path):
@@ -79,7 +80,7 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     ):
         runtime.receive(value)
     assert len(rows(runtime, "inbox")) == 4 and len(rows(runtime, "draws")) == 2
-    assert runtime.router.process_one(Event)  # Explicitly mentioned unknown text gets help.
+    assert runtime.router.process_one()  # Explicitly mentioned unknown text gets help.
     assert '帮助' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
     private = dict(chat_type="private", chat_id="wxid_owner", sender_id="wxid_owner", mentioned_ids=())
     process(runtime, event(13, text="暂停群功能", **private))
@@ -97,20 +98,26 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     assert all('。' not in json.loads(item['payload']).get('text', '') for item in rows(runtime, 'outbox'))
 
 
-def test_atomic_effects_dedup_send_failures_and_uncertain_restart(tmp_path):
+def test_atomic_effects_dedup_send_failures_and_uncertain_restart(tmp_path, monkeypatch):
     gateway = FakeGateway([SendResult("failed", "not submitted", True), SendResult("accepted")])
     runtime = setup(tmp_path, gateway=gateway)
     value = event(1)
     runtime.receive(value)
     runtime.receive(value)
     assert len(rows(runtime, "inbox")) == 1
-    def crash():
-        raise RuntimeError("crash before business/inbox/outbox commit")
-    with pytest.raises(RuntimeError):
-        runtime.router.process_one(Event, before_commit=crash)
+    transaction = runtime.store.transaction
+    @contextmanager
+    def interrupted_transaction():
+        with transaction() as connection:
+            yield connection
+            raise RuntimeError("crash before business/inbox/outbox commit")
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.store, "transaction", interrupted_transaction)
+        with pytest.raises(RuntimeError):
+            runtime.router.process_one()
     assert rows(runtime, "draws") == [] and rows(runtime, "outbox") == []
     assert rows(runtime, "inbox")[0]["state"] == "pending"
-    assert runtime.router.process_one(Event)
+    assert runtime.router.process_one()
     saved = rows(runtime, "draws")[0]
     reply = json.loads(rows(runtime, "outbox")[0]["payload"])
     clock = time.time()
@@ -120,7 +127,7 @@ def test_atomic_effects_dedup_send_failures_and_uncertain_restart(tmp_path):
     restarted = Runtime(runtime.config, gateway)
     restarted.store.recover()
     restarted.receive(value)
-    assert not restarted.router.process_one(Event)
+    assert not restarted.router.process_one()
     assert restarted.send_one(now=clock + 5)
     assert rows(restarted, "draws") == [saved]
     assert gateway.sent[0].text == gateway.sent[1].text == reply["text"]
@@ -140,7 +147,7 @@ def test_atomic_effects_dedup_send_failures_and_uncertain_restart(tmp_path):
     assert len(gateway.sent) == 3 and len(rows(restarted, "draws")) == 3
     # Expired commands cause no game/draw effect.
     restarted.receive(event(4, sender="wxid_expired", received_at=clock - 1000))
-    assert restarted.router.process_one(Event, now=clock)
+    assert restarted.router.process_one(now=clock)
     assert rows(restarted, "inbox")[-1]["state"] == "expired"
     assert len(rows(restarted, "draws")) == 3
 
@@ -160,7 +167,7 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     winner = event(3, "我猜是apple", sender="wxid_bob")
     process(runtime, winner)
     runtime.receive(winner)
-    assert not runtime.router.process_one(Event)
+    assert not runtime.router.process_one()
     process(runtime, event(4, "猜词战绩", sender="wxid_bob"))
     process(runtime, event(5, "随机zxj"))
     process(runtime, event(6, "随机zxj", sender="wxid_bob"))

@@ -1,6 +1,6 @@
 """SQLite persistence. Game rules belong in game.py."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from importlib.resources import files
 import json
 from pathlib import Path
@@ -87,19 +87,12 @@ class WordleStore:
                 raise ValueError("外部连接需要已开启事务及 sqlite3.Row row_factory")
             yield connection
             return
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        # Serializes the read/validate/write sequence across separate CLI processes.
-        connection.execute("BEGIN IMMEDIATE")
-        try:
+        with closing(sqlite3.connect(self.path, timeout=10)) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            # Serialize the read/validate/write sequence across CLI processes.
+            connection.execute("BEGIN IMMEDIATE")
             yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def load(self, connection, group_id, game_id=None, *, active_only=False):
         if game_id is not None:

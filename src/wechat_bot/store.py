@@ -1,6 +1,5 @@
 """One database and transaction for inbox, game effects and ordered replies."""
 from contextlib import contextmanager
-from dataclasses import asdict
 import json
 from pathlib import Path
 import sqlite3
@@ -61,17 +60,6 @@ class BotStore:
     @staticmethod
     def set_setting(c, key, value):
         c.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key,str(value)))
-
-    def receive(self, event, extra=None):
-        payload = asdict(event)
-        if extra:
-            payload.update(extra)
-        with self.transaction() as c:
-            cursor = c.execute("""INSERT OR IGNORE INTO inbox
-                (namespace,account_id,chat_id,native_message_id,received_at,payload)
-                VALUES ('helper.native_text',?,?,?,?,?)""", (event.account_id,event.chat_id,
-                    event.native_message_id,event.received_at,json.dumps(payload,ensure_ascii=False)))
-            return bool(cursor.rowcount)
 
     def recover(self):
         with self.transaction() as c:

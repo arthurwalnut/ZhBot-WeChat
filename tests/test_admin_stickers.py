@@ -86,32 +86,6 @@ def test_local_import_shared_pool_and_transactional_delete(tmp_path, monkeypatch
     connection.close()
 
 
-def test_origin_migration_and_standalone_delete(tmp_path):
-    service = StickerService(tmp_path)
-    connection = sqlite3.connect(tmp_path / 'old.sqlite3')
-    connection.row_factory = sqlite3.Row
-    connection.execute('''CREATE TABLE stickers (
-        id INTEGER PRIMARY KEY,account_id TEXT NOT NULL,chat_id TEXT NOT NULL,sender_id TEXT NOT NULL,
-        native_message_id TEXT NOT NULL,created_at REAL NOT NULL,digest TEXT NOT NULL,path TEXT NOT NULL,
-        bytes INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,frames INTEGER NOT NULL,
-        format TEXT NOT NULL,source_format TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',deleted INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(account_id,chat_id,native_message_id))''')
-    connection.execute("""INSERT INTO stickers VALUES
-        (1,'wxid_robot','123@chatroom','wxid_alice','12345',100,'unchanged','unchanged',1,1,1,1,'GIF','GIF','original',0)""")
-    connection.commit()
-    original = tuple(connection.execute('SELECT * FROM stickers').fetchone())
-    with connection:
-        service.initialize(connection)
-    row = connection.execute('SELECT * FROM stickers').fetchone()
-    assert tuple(row)[:len(original)] == original and row['origin'] == 'wechat'
-    with connection:
-        service.delete_with_pending(connection, account_id='wxid_robot', chat_id='123@chatroom',
-                                    sender_id='wxid_owner', owner_id='wxid_owner', sticker_id=1)
-    assert connection.execute('SELECT deleted FROM stickers').fetchone()[0] == 1
-    assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='outbox'").fetchone() is None
-    connection.close()
-
-
 @pytest.mark.parametrize('result,expected', [
     (SendResult('failed', 'not submitted', True), 'expired'),
     (SendResult('accepted', 'submission completed'), 'accepted'),

@@ -34,19 +34,6 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     )
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=10)
-    connection.row_factory = sqlite3.Row
-    try:
-        initialize_schema(connection)
-    except Exception:
-        connection.close()
-        raise
-    return connection
-
-
 @contextmanager
 def _transaction(db_path, connection):
     if connection is not None:
@@ -57,7 +44,11 @@ def _transaction(db_path, connection):
         return
     if db_path is None:
         raise ValueError("需要 db_path 或外部 connection")
-    with closing(_connect(db_path)) as owned, owned:
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=10)) as owned, owned:
+        owned.row_factory = sqlite3.Row
+        initialize_schema(owned)
         owned.execute("BEGIN IMMEDIATE")
         yield owned
 

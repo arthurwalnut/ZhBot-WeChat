@@ -153,7 +153,7 @@ def convert_sticker(data, is_current=lambda: True):
                 continue
             last_size = size
             payload = _encode(data, size, durations, loop, is_current)
-            if payload is None or len(payload) > MAX_BYTES:
+            if payload is None:
                 continue
             _, _, _, output_durations, output_loop = _inspect(payload, is_current)
             if output_durations != durations or output_loop != loop:

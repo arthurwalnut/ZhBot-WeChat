@@ -102,11 +102,12 @@ def test_member_upload_isolation_and_persistent_native_resources(tmp_path, monke
     item = restarted.random(connection, **scope)
     assert item["id"] == first["id"] and Path(item["path"]).read_bytes() == gif.getvalue()
     with pytest.raises(StickerError):
-        restarted.delete(connection, **bob, sticker_id=item["id"])
+        restarted.delete_with_pending(connection, **bob, sticker_id=item["id"])
     with connection:
-        restarted.delete(connection, **bob, sticker_id=item["id"], owner_id="wxid_bob")
+        restarted.delete_with_pending(connection, **bob, sticker_id=item["id"], owner_id="wxid_bob")
     assert restarted.random(connection, **scope) is None
     assert restarted.list(connection, **alice)["total"] == 0
+    assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='outbox'").fetchone() is None
     assert path.exists()  # Sending/uncertain outbox references may still need it.
     connection.close()
 
@@ -256,9 +257,11 @@ def test_png_quality_limits_and_original_dedup_migration(tmp_path):
         (1,'wxid_robot','123@chatroom','wxid_alice','10',100,?,?,?,8,8,1,'GIF','PNG','old',0)""",
         (old_digest, str(old_path), len(old_gif.getvalue())))
     connection.commit()
+    original_row = tuple(connection.execute("SELECT * FROM stickers WHERE id=1").fetchone())
     with connection:
         service.initialize(connection)
     old = connection.execute("SELECT * FROM stickers WHERE id=1").fetchone()
+    assert tuple(old)[:len(original_row)] == original_row and old['origin'] == 'wechat'
     assert old["source_digest"] is None and old["source_path"] is None
     scope = {"account_id": "wxid_robot", "chat_id": "123@chatroom", "sender_id": "wxid_bob"}
     prepared = service.prepare(payload, source_format="PNG", source_data=original,

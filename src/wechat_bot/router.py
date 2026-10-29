@@ -6,6 +6,7 @@ import time
 
 from zxj.service import draw, history_page
 from wordle.game import WordleService, GameError
+from .gateway import Event
 from .store import BotStore
 from .stickers import WAIT_SECONDS
 from . import dictionaries
@@ -145,14 +146,14 @@ class Router:
             return reply('已删除该条目并取消尚未开始发送的待发项。')
         return []
 
-    def process_one(self, event_class, *, now=None, before_commit=None, prepared=None, media_error=None):
+    def process_one(self, *, now=None, prepared=None, media_error=None):
         now = time.time() if now is None else now
         with self.store.transaction() as c:
             row = c.execute("SELECT * FROM inbox WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
             if row is None:
                 return False
             data = json.loads(row['payload'])
-            event = event_class(**{k:v for k,v in data.items() if k in event_class.__dataclass_fields__})
+            event = Event(**{k:v for k,v in data.items() if k in Event.__dataclass_fields__})
             if not data.get('sticker_intent') and now - event.received_at > self.config.max_command_age_seconds:
                 data['media_ref'] = None
                 c.execute("UPDATE inbox SET state='expired',payload=? WHERE id=?",(json.dumps(data,ensure_ascii=False),row['id']))
@@ -176,6 +177,4 @@ class Router:
             self.store.replies(c,row,replies)
             data['media_ref'] = None
             c.execute("UPDATE inbox SET state='done',result=?,payload=? WHERE id=?",(json.dumps({"replies":len(replies)}),json.dumps(data,ensure_ascii=False),row['id']))
-            if before_commit:
-                before_commit()
         return True

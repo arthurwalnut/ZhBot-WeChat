@@ -45,29 +45,29 @@ class AdminService:
     def _members(self, connection):
         # Read only observed identity metadata, never message bodies or media URLs.
         members = {}
+
+        def observe(member_id, group=None, name=None):
+            item = members.setdefault(member_id, {'id': member_id, 'name': member_id, 'groups': []})
+            if name:
+                item['name'] = name
+            if group and group not in item['groups']:
+                item['groups'].append(group)
+
         for row in connection.execute("""SELECT chat_id,
                 json_extract(payload,'$.sender_id') AS member_id,
                 json_extract(payload,'$.sender_display_name') AS name
                 FROM inbox WHERE account_id=? ORDER BY received_at,id""", (self.config.account_id,)):
             if row['chat_id'] not in self.config.group_allowlist or not row['member_id']:
                 continue
-            item = members.setdefault(row['member_id'], {'id': row['member_id'], 'name': row['member_id'], 'groups': []})
-            if row['name']:
-                item['name'] = row['name']
-            if row['chat_id'] not in item['groups']:
-                item['groups'].append(row['chat_id'])
+            observe(row['member_id'], row['chat_id'], row['name'])
         for row in connection.execute('SELECT sender_id,chat_id FROM stickers WHERE account_id=?', (self.config.account_id,)):
             if row['chat_id'] in self.config.group_allowlist:
-                item = members.setdefault(row['sender_id'], {'id': row['sender_id'], 'name': row['sender_id'], 'groups': []})
-                if row['chat_id'] not in item['groups']:
-                    item['groups'].append(row['chat_id'])
+                observe(row['sender_id'], row['chat_id'])
         for row in connection.execute('SELECT DISTINCT user_id FROM draws'):
-            members.setdefault(row['user_id'], {'id': row['user_id'], 'name': row['user_id'], 'groups': []})
+            observe(row['user_id'])
         for row in connection.execute("SELECT DISTINCT winner_id,group_id FROM games WHERE status='won'"):
             if row['group_id'] in self.config.group_allowlist:
-                item = members.setdefault(row['winner_id'], {'id': row['winner_id'], 'name': row['winner_id'], 'groups': []})
-                if row['group_id'] not in item['groups']:
-                    item['groups'].append(row['group_id'])
+                observe(row['winner_id'], row['group_id'])
         return members
 
     @staticmethod
@@ -116,8 +116,9 @@ class AdminService:
                 raise ValueError('搜索内容无效')
             answers, allowed = dictionaries.words(connection)
             answer_set = set(answers)
+            search = search.lower().strip()
             items = [{'word': word, 'length': len(word), 'kind': '答案词' if word in answer_set else '仅可猜'}
-                     for word in sorted(allowed) if (not length or len(word) == length) and search.lower().strip() in word]
+                     for word in sorted(allowed) if (not length or len(word) == length) and search in word]
             return self._page(request, items, 100)
         if action == 'sticker_delete':
             group = self._group(request.get('group_id'), required=True)

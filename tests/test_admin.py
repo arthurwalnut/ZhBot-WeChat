@@ -1,5 +1,7 @@
 """Local admin contract on isolated data; never sends WeChat messages."""
+from dataclasses import asdict
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -17,10 +19,14 @@ def test_owner_management_records_dictionaries_and_media(tmp_path):
     cfg = Config(account_id='wxid_robot', owner_id='wxid_owner', wechat_pid=123,
                  group_allowlist=('one@chatroom', 'two@chatroom'), data_dir=tmp_path / 'data')
     admin = AdminService(cfg)
-    for identifier, member, group, name in ((1, 'wxid_a', 'one@chatroom', '甲'), (2, 'wxid_b', 'two@chatroom', '乙')):
-        admin.store.receive(Event(cfg.account_id, group, 'group', member, str(identifier), 1,
-                                  'text', sender_display_name=name))
     with admin.store.transaction() as c:
+        for identifier, member, group, name in ((1, 'wxid_a', 'one@chatroom', '甲'), (2, 'wxid_b', 'two@chatroom', '乙')):
+            event = Event(cfg.account_id, group, 'group', member, str(identifier), 1,
+                          'text', sender_display_name=name)
+            c.execute("""INSERT INTO inbox
+                (namespace,account_id,chat_id,native_message_id,received_at,payload)
+                VALUES ('helper.native_text',?,?,?,?,?)""", (cfg.account_id, group,
+                event.native_message_id, event.received_at, json.dumps(asdict(event))))
         old = draw('wxid_a', connection=c, now=datetime(2026, 10, 30, tzinfo=UTC))
         draw('wxid_b', connection=c, now=datetime(2026, 10, 30, tzinfo=UTC))
     game = WordleService(admin.store.path, dictionary_provider=dictionaries.words,

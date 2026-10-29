@@ -41,12 +41,13 @@ def render_board(board, output_path):
             if guess:
                 draw.text((x + cell / 2, y + cell / 2), guess["word"][column].upper(),
                           fill="white", font=letter_font, anchor="mm")
+    legend_font = _font(14)
     for offset, (color, label) in enumerate((
         ("green", "Letter + place correct"),
         ("yellow", "Letter in word, wrong place"),
     )):
         y = height - 63 + offset * 29
         draw.rectangle((margin, y, margin + 19, y + 19), fill=colors[color])
-        draw.text((margin + 30, y + 2), label, fill="#d7dadc", font=_font(14))
+        draw.text((margin + 30, y + 2), label, fill="#d7dadc", font=legend_font)
     image.save(output_path, format="PNG")
     return output_path
