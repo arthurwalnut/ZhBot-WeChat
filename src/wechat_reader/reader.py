@@ -3,6 +3,8 @@
 An unchanged fixed-size snapshot of identical texts cannot reveal whether another
 identical message arrived. Content-only alignment is also unable to distinguish
 every history scroll from arrival; the backend must mark detected interruptions.
+Without a scroll pattern, visible-mode snapshots require stationary shared rows
+and a complete old prefix. Any viewport movement/eviction creates a gap.
 """
 
 from dataclasses import dataclass, field
@@ -29,6 +31,8 @@ class Snapshot:
     backend: str = "uia"
     detected_chat_type: str | None = None
     interruption: str | None = None
+    row_positions: tuple[tuple[tuple | str, tuple[int, int, int, int]], ...] = ()
+    require_full_prefix: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,40 +87,53 @@ class SnapshotDiffer:
         self._previous = Snapshot(
             snapshot.chat_key, snapshot.title, tuple(snapshot.messages),
             snapshot.observed_at, snapshot.backend, snapshot.detected_chat_type,
+            row_positions=tuple(snapshot.row_positions),
+            require_full_prefix=snapshot.require_full_prefix,
         )
         if snapshot.interruption:
-            self._previous = None
-            return DiffResult("gap", reason=snapshot.interruption)
+            return self._gap(snapshot.interruption)
         if previous is None:
             return DiffResult("baseline", reason="Initial snapshot; no historical events emitted.")
-        if (previous.chat_key, previous.title, previous.backend) != (
-                snapshot.chat_key, snapshot.title, snapshot.backend):
-            return DiffResult("gap", reason="Conversation or backend changed; baseline reset.")
+        if (previous.chat_key, previous.title, previous.backend, previous.require_full_prefix) != (
+                snapshot.chat_key, snapshot.title, snapshot.backend, snapshot.require_full_prefix):
+            return self._gap("Conversation or backend changed; waiting for a fresh baseline.")
+        old_positions = dict(previous.row_positions)
+        if any(key in old_positions and old_positions[key] != rectangle
+               for key, rectangle in snapshot.row_positions):
+            return self._gap("Shared message rows moved; waiting for a fresh baseline.")
         old = [_key(message) for message in previous.messages]
         new = [_key(message) for message in snapshot.messages]
         if old == new:
             return DiffResult("unchanged")
         # Empty snapshots provide no anchor for distinguishing arrivals/history.
         if not old or not new:
-            return DiffResult("gap", reason="Empty snapshot; baseline reset.")
+            return self._gap("Empty snapshot; waiting for a fresh baseline.")
+        if snapshot.require_full_prefix and new[:len(old)] != old:
+            return self._gap("Visible rows lost their full prefix; waiting for a fresh baseline.")
         overlaps = [size for size in range(1, min(len(old), len(new)) + 1)
                     if old[-size:] == new[:size]]
         if not overlaps:
-            return DiffResult("gap", reason="Snapshots do not align; baseline reset.")
+            return self._gap("Snapshots do not align; waiting for a fresh baseline.")
         overlap = overlaps[-1]
         if overlap == len(new):
-            return DiffResult("gap", reason="Snapshot shortened or history moved; baseline reset.")
+            return self._gap("Snapshot shortened or history moved; waiting for a fresh baseline.")
         if len(overlaps) > 1 and overlap != len(old):
-            return DiffResult("gap", reason="Repeated rows make alignment ambiguous; baseline reset.")
+            return self._gap("Repeated rows make alignment ambiguous; waiting for a fresh baseline.")
         added = snapshot.messages[overlap:]
         if overlap != len(old) and any(_key(message) in old for message in added):
-            return DiffResult("gap", reason="Tail may contain reordered history; baseline reset.")
+            return self._gap("Tail may contain reordered history; waiting for a fresh baseline.")
         # A previously visible runtime row reappearing at the tail is a reorder.
         old_runtime = {key[0] for key in old if key[0] is not None}
         if any(_key(message)[0] in old_runtime for message in added
                if message.runtime_key is not None):
-            return DiffResult("gap", reason="Runtime rows were reused/reordered; baseline reset.")
+            return self._gap("Runtime rows were reused/reordered; waiting for a fresh baseline.")
         return DiffResult("new", [self._event(snapshot, message) for message in added])
+
+    def _gap(self, reason: str) -> DiffResult:
+        # Do not turn a transiently truncated view into a baseline and replay its
+        # restored tail as arrivals. The next successful snapshot is baseline only.
+        self._previous = None
+        return DiffResult("gap", reason=reason)
 
     def _event(self, snapshot: Snapshot, message: Message) -> Event:
         return Event(

@@ -4,6 +4,7 @@ import importlib.metadata
 import ctypes
 from ctypes import wintypes
 import platform
+import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +134,16 @@ class UIABackend:
                 "control_count": len(nodes), "controls": controls,
                 "text_included": include_text, "reception_verified": False}
 
+    def select_chat(self):
+        current, root = self._root()
+        if current["minimized"]:
+            raise ValueError("请先手工恢复微信并打开目标会话。")
+        nodes = root.descendants(depth=24)
+        title = profiles.unique(nodes, profiles.MMUI_SELECTORS["title"], "会话标题")
+        profiles.unique(nodes, profiles.MMUI_SELECTORS["messages"], "消息列表")
+        return {"title": title.name, "detected_type": profiles.detect_chat_type(nodes),
+                "selectors": profiles.MMUI_SELECTORS}
+
     def read_snapshot(self, config):
         from .reader import Message, Snapshot
         current, root = self._root()
@@ -144,21 +155,20 @@ class UIABackend:
         if title.name != config["chat"]["title"]:
             raise ValueError("当前会话标题与选择记录不同；暂停，请重新 select。")
         container = profiles.unique(nodes, rules.get("messages", {}), "消息列表")
-        # Require bottom-of-list evidence. Never scroll to obtain it.
-        from pywinauto.controls.uiawrapper import UIAWrapper
-        try:
-            scroll = UIAWrapper(container).iface_scroll
-        except Exception as exc:
-            raise ValueError("消息列表未提供可核实的滚动状态；需按真实控件继续适配。") from exc
-        position = scroll.CurrentVerticalScrollPercent
-        if position not in (-1, 100):
-            raise ValueError("消息列表不在底部；存在历史滚动，暂停并重建基线。")
+        # This actual Qt list exposes no ScrollPattern. Read only rows whose
+        # rectangles intersect the viewport; never assume it is at the bottom.
+        viewport = container.rectangle
         messages = []
+        positions = []
         row_rule = rules.get("row", {})
         if not row_rule:
             raise ValueError("消息行规则尚未配置，真实接收未完成。")
         rows = [node for node in container.children() if profiles.matches(node, row_rule)]
         for row in rows:
+            rect = row.rectangle
+            if not (rect.right > viewport.left and rect.left < viewport.right
+                    and rect.bottom > viewport.top and rect.top < viewport.bottom):
+                continue
             subtree = [row, *row.descendants(depth=8)]
             text_nodes = [n for n in subtree if profiles.matches(n, rules.get("text", {}))]
             if len(text_nodes) > 1:
@@ -167,8 +177,7 @@ class UIABackend:
             # No parsing of nicknames, timestamps or native IDs from display text.
             messages.append(Message(text=text, message_type="text" if text else "unknown",
                                     runtime_key=tuple(row.runtime_id)))
-        if not rows:
-            raise ValueError("没有可核实的消息行；不把空列表视为已接入。")
+            positions.append((tuple(row.runtime_id), (rect.left, rect.top, rect.right, rect.bottom)))
         # Recheck after traversal: a chat/window may change during a UIA query.
         after, current_root = self._root()
         after_nodes = current_root.descendants(depth=24)
@@ -179,16 +188,22 @@ class UIABackend:
             raise ValueError("读取过程中窗口或会话结构变化，丢弃本次快照并重新选择。")
         return Snapshot(chat_key=(current["hwnd"], tuple(container.runtime_id), title.name),
                         title=title.name, messages=messages,
-                        observed_at=datetime.now(timezone.utc).isoformat(), backend="uia")
+                        observed_at=datetime.now(timezone.utc).isoformat(), backend="uia-visible",
+                        detected_chat_type=profiles.detect_chat_type(nodes),
+                        row_positions=tuple(positions), require_full_prefix=True)
 
 
 def query_worker(pipe, action, argument):
     """Importable target for Windows spawn (package __main__ is not importable)."""
+    # The parent handles Ctrl+C and terminates this read-only worker in finally.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         if action == "doctor":
             result = doctor()
         elif action == "probe":
             result = UIABackend(argument[0]).probe(argument[1])
+        elif action == "select":
+            result = UIABackend(argument).select_chat()
         else:
             result = UIABackend(argument["binding"]).read_snapshot(argument)
         pipe.send((True, result))

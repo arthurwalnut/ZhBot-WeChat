@@ -63,14 +63,20 @@ def selection(args):
         window = windows[index - 1]
     account = args.account_alias or input("本地账号别名（不是微信 ID）：").strip()
     chat = args.chat_alias or input("本地会话别名（群聊/私聊分别配置）：").strip()
-    title = args.chat_title or input("手工打开目标会话后，填写界面显示的完整会话标题：").strip()
+    observed = query("select", window)
+    title = observed["title"]
+    print(f"实际打开的会话：{title!r}；界面识别类型：{observed['detected_type']}")
+    if args.chat_title and args.chat_title != title:
+        raise ValueError("--chat-title 与实际打开的会话不符；请手工打开目标会话。")
+    if not args.chat_title and input("确认观察这个会话？输入 yes：").strip() != "yes":
+        raise ValueError("未确认当前会话，未保存配置。")
     if not all((account, chat, title)):
         raise ValueError("别名与会话标题不能为空。")
     path = args.config.resolve()
     if path.exists() and input(f"替换已有配置 {path}？输入 yes：").strip() != "yes":
         raise ValueError("已保留原配置。")
     lines = ["# 会话选择是本地定位信息；原生微信身份尚未识别。",
-             "# 尚无已实测的消息规则。按真实 UIA 树填写下方 selectors 后才可 watch。",
+             "# UIA 可见区域规则；版本与绑定每次重查，不承诺完整后台消息流。",
              "[binding]"]
     for key in ("hwnd", "pid", "process_started", "process_path", "class_name", "version"):
         if window[key] is not None:
@@ -79,13 +85,15 @@ def selection(args):
                   f"alias = {json.dumps(chat, ensure_ascii=False)}",
                   f"title = {json.dumps(title, ensure_ascii=False)}",
                   f"expected_type = {json.dumps(args.expected_type)}",
-                  "# expected_type 是用户提供的预期；实际探测类型仍为 null。"])
+                  "# expected_type 是用户提供的预期；实际类型由每次 UIA 快照独立探测。"])
     for section in ("title", "messages", "row", "text"):
-        lines.extend(["", f"[selectors.{section}]", "# 可填写 control_type / class_name / automation_id / name；必须来自真实控件。"])
+        lines.extend(["", f"[selectors.{section}]"])
+        for key, value in observed["selectors"][section].items():
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"已保存窗口选择：{path}")
-    print("消息定位规则尚未完成；select 成功不代表真实接入成功。")
+    print("已填入本机观察到的控件规则；启动 watch 后需要新消息验证。")
 
 
 def watch(args):
@@ -97,7 +105,7 @@ def watch(args):
         raise ValueError("--interval 至少为 0.5 秒。")
     differ = SnapshotDiffer(config["chat"]["account_alias"], config["chat"]["alias"])
     print("只读观察：初始快照不作为新消息。字段缺失为 null；无法识别所有账号切换或同名会话。")
-    print("当前版本的群聊/私聊真实接收尚未验证；首次运行需要人工核对来源与正文。")
+    print("观察范围：可见消息区域；滚动、窗口移动/缩放、旧行移出可见区将报告 gap。")
     if args.jsonl:
         args.jsonl = args.jsonl.resolve()
         args.jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -107,6 +115,8 @@ def watch(args):
         result = differ.update(snapshot)
         if result.status != "unchanged":
             print(f"观察状态：{result.status}" + (f"；{result.reason}" if result.reason else ""), flush=True)
+        if result.status == "baseline" and not snapshot.messages:
+            print("当前可见区域为空；首批出现内容将用于建立基线，不作为新增消息。", flush=True)
         for event in result.events:
             line = json.dumps(asdict(event), ensure_ascii=False)
             print(line, flush=True)
@@ -119,14 +129,14 @@ def watch(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="微信只读 UIA 探测与观察；真实接收尚待验证")
+    parser = argparse.ArgumentParser(description="微信只读 UIA 可见消息区域观察")
     commands = parser.add_subparsers(dest="command", required=True)
     doctor = commands.add_parser("doctor", help="真实系统、依赖、微信版本与窗口诊断")
     doctor.add_argument("--hwnd", type=int, help="探测 doctor 返回的指定窗口 UIA 树")
     doctor.add_argument("--include-text", action="store_true", help="明确选择将该窗口 UIA 文字写入本地诊断（可能含聊天内容）")
     doctor.add_argument("--reported-version", help="检测失败时记录人工版本；不替代 detected version")
     doctor.add_argument("--output", type=Path, default=Path("runtime/doctor.json"))
-    select = commands.add_parser("select", help="明确选择窗口；保存本地别名和待校准规则")
+    select = commands.add_parser("select", help="明确选择窗口与当前会话；保存别名和实际控件规则")
     select.add_argument("--config", type=Path, default=Path("runtime/config.local.toml"))
     select.add_argument("--hwnd", type=int)
     select.add_argument("--account-alias")
