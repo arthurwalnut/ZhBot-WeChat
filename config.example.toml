@@ -1,5 +1,6 @@
 # 结构示例。请先运行 select 生成本机配置，不能直接使用 HWND/PID=0。
-# 2026-10-29 微信 4.1.15.13 私聊控件规则已实测；群聊未验证。
+# 2026-10-29 微信 4.1.15.13 私聊/群聊正文规则已实测。
+# 群发送者来自深色主题、150% 缩放下的 Windows OCR，存在误字，不是原生身份。
 # select 读取并确认当前会话标题，再自动填入以下规则。
 [binding]
 hwnd = 0
@@ -16,7 +17,7 @@ title = "REPLACE_WITH_OBSERVED_CHAT_TITLE"
 expected_type = "unknown"
 # 仅记录用户预期；实际 detected_chat_type 由每次 UIA 快照独立探测。
 
-# 以下规则来自本机真实私聊 UIA 树，窗口与会话绑定仍必须重新选择。
+# 以下规则来自本机真实私聊/群聊 UIA 树，窗口与会话绑定仍必须重新选择。
 # 属性可用：control_type、class_name、automation_id、name。
 # title/messages 必须唯一；row 匹配列表直接子项；text 匹配行自身或行内正文。
 # 仅观察列表视口相交行；无 ScrollPattern，视口变化会报告 gap，期间可能漏读。

@@ -20,6 +20,7 @@ class Message:
     native_sender_id: str | None = None
     native_sent_at: str | None = None
     runtime_key: tuple | str | None = None
+    sender_display_name_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class Event:
     native_message_id: str | None = None
     native_sender_id: str | None = None
     native_sent_at: str | None = None
+    observation_kind: str = "new"
+    sender_display_name_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,7 +138,16 @@ class SnapshotDiffer:
         self._previous = None
         return DiffResult("gap", reason=reason)
 
-    def _event(self, snapshot: Snapshot, message: Message) -> Event:
+    def visible_events(self, snapshot: Snapshot) -> list[Event]:
+        """Label currently visible rows without claiming arrival or backfill.
+
+        This explicit snapshot output neither advances nor restores the baseline.
+        A row may occur again in later snapshots with another local event UUID.
+        """
+        return [self._event(snapshot, message, "snapshot") for message in snapshot.messages]
+
+    def _event(self, snapshot: Snapshot, message: Message,
+               observation_kind: str = "new") -> Event:
         return Event(
             event_id=str(uuid4()), observed_at=snapshot.observed_at,
             account_alias=self.account_alias, chat_alias=self.chat_alias,
@@ -146,4 +158,6 @@ class SnapshotDiffer:
             native_message_id=message.native_message_id,
             native_sender_id=message.native_sender_id,
             native_sent_at=message.native_sent_at,
+            observation_kind=observation_kind,
+            sender_display_name_source=message.sender_display_name_source,
         )

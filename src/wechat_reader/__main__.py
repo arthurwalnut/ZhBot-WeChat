@@ -117,7 +117,11 @@ def watch(args):
             print(f"观察状态：{result.status}" + (f"；{result.reason}" if result.reason else ""), flush=True)
         if result.status == "baseline" and not snapshot.messages:
             print("当前可见区域为空；首批出现内容将用于建立基线，不作为新增消息。", flush=True)
-        for event in result.events:
+        events = result.events
+        if args.show_snapshots and result.status in ("baseline", "gap"):
+            print("以下为当前可见快照（snapshot），不表示新到消息，也不表示补齐漏读。", flush=True)
+            events = differ.visible_events(snapshot)
+        for event in events:
             line = json.dumps(asdict(event), ensure_ascii=False)
             print(line, flush=True)
             if args.jsonl:
@@ -148,6 +152,8 @@ def main():
     watch_parser.add_argument("--interval", type=float, default=1)
     watch_parser.add_argument("--jsonl", type=Path, help="主动启用原始观察记录保存；默认只打印终端")
     watch_parser.add_argument("--once", action="store_true", help="只建立一次基线，用于验证绑定")
+    watch_parser.add_argument("--show-snapshots", action="store_true",
+                              help="在初始基线和 gap 时显示可见内容，明确标记 snapshot，不能当作新增")
     args = parser.parse_args()
     try:
         if args.command == "doctor":

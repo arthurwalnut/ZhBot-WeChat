@@ -16,8 +16,11 @@ MMUI_SELECTORS = {
 
 
 def detect_chat_type(nodes):
-    if any(n.class_name == "mmui::ChatTitleBarChatSingleView" for n in nodes):
-        return "private"
+    kinds = {"mmui::ChatTitleBarChatSingleView": "private",
+             "mmui::ChatTitleBarChatRoomView": "group"}
+    detected = {kinds[n.class_name] for n in nodes if n.class_name in kinds}
+    if len(detected) == 1:
+        return detected.pop()
     return None
 
 

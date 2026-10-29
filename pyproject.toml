@@ -19,6 +19,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 zxj = ["characters.json"]
 wordle = ["words.json"]
+wechat_reader = ["windows_ocr.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
