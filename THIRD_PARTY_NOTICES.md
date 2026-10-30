@@ -1,5 +1,13 @@
 # 第三方来源与许可
 
+## v0.2.7 Wordle 数据增补
+
+按用户指定，从 [andifathulms/word-space](https://github.com/andifathulms/word-space/tree/6b2ce3432d5753d2b77724e0255ca6d4d019d34d/data) 固定提交 `6b2ce3432d5753d2b77724e0255ca6d4d019d34d` 的 `data/answers.txt`（2,315 词）与 `data/guesses.txt`（12,972 词）合并普通五字母词条，未复制其应用代码或界面。原有其他长度词库保留。
+
+核查时该仓库未提供明确开源许可证；未将这份数据标注为 MIT、Apache 或公有领域。其 [data/README.md](https://github.com/andifathulms/word-space/blob/6b2ce3432d5753d2b77724e0255ca6d4d019d34d/data/README.md) 声明来源为 Josh Wardle 原 Wordle 词表、经 cfreshman 镜像取得，并说明其非商业作品集用途；这是上游来源说明。与原项目、作者及商标权利人无隶属关系。
+
+来源摘要：answers.txt SHA-256 `f40e47975cf360ff9febe7d49c8e285054d8fa3fb9644cea575922060951d6ee`；guesses.txt SHA-256 `feacc549249b5dcb43e2799fbbcda14ebc33d55904fb15d043779104e60c1579`。来源说明随包保存在 `src/wordle/word_space.NOTICE`，迁移清单为 `word_space_upgrade.json`。
+
 ## v0.2.6 非好友群成员名称补充
 
 `src/wechat_bot/adapters/member_names.py` 移植自 helper 提交
@@ -22,7 +30,7 @@
 
 pytest 的解析、终端输出等传递依赖由包管理器安装，约束文件记录其版本；各自完整许可保留在 `.venv/Lib/site-packages/*dist-info/`。Python 3.12.12 运行时通过 uv 获取 python-build-standalone 发行，保留在 `.python/`，含运行时许可文件；它与 `.venv` 均不提交到 Git。
 
-`characters.json` 和 `words.json` 为本项目显式维护的单字/常用词集合，没有复制第三方词库。棋盘读取 Windows 已安装的 Arial Bold 或 Segoe UI Bold；本仓库不复制、分发字体。找不到系统字体时使用 Pillow 随包默认字体，其许可随 Pillow 发行包保留。
+`characters.json` 和 v0.2.6 及之前的 `words.json` 为本项目显式维护的单字/常用词集合；v0.2.7 的第三方词条增补见上文。棋盘读取 Windows 已安装的 Arial Bold 或 Segoe UI Bold；本仓库不复制、分发字体。找不到系统字体时使用 Pillow 随包默认字体，其许可随 Pillow 发行包保留。
 
 2026-10-30：`words.json` 扩展为 3～10 字母、2348 个项目维护的答案，保留原五字母词库。`ZhBot.exe` 从仓库的 `launcher/Launcher.cs` 使用 Windows 自带 .NET Framework v4 C# 编译器构建，调用已安装的 WinForms；未将 .NET、Python 或 helper DLL 嵌入 EXE。新增 PNG 转换代码使用已有 Pillow，未添加运行依赖或修改固定上游源码。
 

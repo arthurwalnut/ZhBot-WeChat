@@ -98,10 +98,13 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     before = rows(runtime, 'draws')
     process(runtime, event(19, text='随机zxj', sender='wxid_dave'))
     assert rows(runtime, 'draws') == before
-    assert '未识别指令' in json.loads(rows(runtime, 'outbox')[-1]['payload'])['text']
+    assert json.loads(rows(runtime, 'outbox')[-1]['payload'])['text'] == '我没听懂哦~\n试试@我发送“帮助”吧'
     process(runtime, event(20, text='帮助'))
     help_text = json.loads(rows(runtime, 'outbox')[-1]['payload'])['text']
     assert '今日zxj' in help_text and '随机zxj' not in help_text
+    assert help_text.splitlines()[0] == '@我 后输入'
+    assert help_text.splitlines()[5] == '我猜是 [单词]'
+    assert 'apple' not in help_text
     process(runtime, event(21, text='今日zxj', sender='wxid_dave'))
     assert len(rows(runtime, 'draws')) == len(before) + 1
     assert all(item["chat_id"] in {"123@chatroom", "wxid_owner"} for item in rows(runtime, "outbox"))

@@ -170,7 +170,18 @@ class StickerService:
                     temporary.unlink()  # Only this call's uncommitted temporary file.
         return destination
 
-    def prepare(self, data: bytes, *, source_format="GIF", note="", source_data=None, legacy_digest=None):
+    @staticmethod
+    def find_source(connection, data, source_format):
+        """Reuse a stored conversion globally; pool membership remains per group."""
+        if not isinstance(data, bytes) or not data:
+            return None
+        row = connection.execute("""SELECT * FROM stickers
+            WHERE source_digest=? AND source_format=? AND deleted=0
+            ORDER BY id LIMIT 1""", (sha256(data).hexdigest(), source_format)).fetchone()
+        return dict(row) if row else None
+
+    def prepare(self, data: bytes, *, source_format="GIF", note="", source_data=None, legacy_digest=None,
+                existing=None):
         """Validate and atomically persist bytes before opening the business transaction."""
         information = _gif_info(data)
         if source_format not in ("GIF", "PNG", "JPEG", "WEBP", "BMP"):
@@ -191,8 +202,14 @@ class StickerService:
             raise StickerError("表情旧版摘要无效")
         digest = sha256(data).hexdigest()
         source_digest = sha256(source_data).hexdigest()
+        if existing and existing['source_digest'] == source_digest and existing['source_format'] == source_format:
+            self._validate_prepared(existing)
+            return dict(existing, legacy_digest=legacy_digest)
         destination = self._persist(self.directory, digest + ".gif", data)
-        source_path = self._persist(self.directory / "originals", source_digest + "." + source_format.lower(), source_data)
+        # An unmodified GIF is its own original; keep one physical byte sequence.
+        # Existing separate originals stay valid and are never deleted here.
+        source_path = destination if source_format == 'GIF' and source_data == data else self._persist(
+            self.directory / "originals", source_digest + "." + source_format.lower(), source_data)
         return {**information, "digest": digest, "path": str(destination), "bytes": len(data),
                 "source_format": source_format, "note": note, "source_digest": source_digest,
                 "source_path": str(source_path), "source_bytes": len(source_data), "legacy_digest": legacy_digest}
@@ -226,10 +243,7 @@ class StickerService:
                          source_key="local:" + uuid.uuid4().hex, created_at=time.time(),
                          origin="local", prepared=prepared)
 
-    def _add(self, connection, *, account_id, chat_id, sender_id, source_key, created_at, origin, prepared):
-        _identity(account_id, chat_id, sender_id)
-        if not isinstance(source_key, str) or not source_key:
-            raise StickerError("表情入库需要来源记录")
+    def _validate_prepared(self, prepared):
         digest = prepared["digest"]
         path = Path(prepared["path"])
         if path != self.directory / (digest + ".gif") or path.is_symlink() or not path.is_file():
@@ -243,12 +257,22 @@ class StickerService:
             raise StickerError("已保存表情的摘要不一致")
         source_digest = prepared["source_digest"]
         source_path = Path(prepared["source_path"])
-        if (source_path != self.directory / "originals" / (source_digest + "." + prepared["source_format"].lower())
+        original_path = self.directory / "originals" / (source_digest + "." + prepared["source_format"].lower())
+        shared_gif = prepared['source_format'] == 'GIF' and source_digest == digest and source_path == path
+        if ((source_path != original_path and not shared_gif)
                 or source_path.is_symlink() or source_path.parent.is_symlink() or not source_path.is_file()
                 or source_path.stat().st_size != prepared["source_bytes"]
                 or not 0 < prepared["source_bytes"] <= MAX_SOURCE_BYTES
                 or sha256(source_path.read_bytes()).hexdigest() != source_digest):
             raise StickerError("已保存表情原件的路径或摘要不一致")
+
+    def _add(self, connection, *, account_id, chat_id, sender_id, source_key, created_at, origin, prepared):
+        _identity(account_id, chat_id, sender_id)
+        if not isinstance(source_key, str) or not source_key:
+            raise StickerError("表情入库需要来源记录")
+        self._validate_prepared(prepared)
+        digest, source_digest = prepared['digest'], prepared['source_digest']
+        source_path = Path(prepared['source_path'])
         existing = connection.execute("""SELECT * FROM stickers
             WHERE account_id=? AND chat_id=? AND
               (((digest IN (?,?) OR source_digest=?) AND deleted=0) OR native_message_id=?)

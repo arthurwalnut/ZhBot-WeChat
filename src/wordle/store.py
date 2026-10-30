@@ -1,6 +1,7 @@
 """SQLite persistence. Game rules belong in game.py."""
 
 from contextlib import closing, contextmanager
+from hashlib import sha256
 from importlib.resources import files
 import json
 from pathlib import Path
@@ -20,6 +21,8 @@ class WordleStore:
     def initialize_schema(connection):
         """Create tables without executescript's implicit transaction commit."""
         statements = (
+            """CREATE TABLE IF NOT EXISTS wordle_dictionaries (
+                    digest TEXT PRIMARY KEY, words_json TEXT NOT NULL)""",
             """
                 CREATE TABLE IF NOT EXISTS games (
                     id INTEGER PRIMARY KEY,
@@ -58,11 +61,17 @@ class WordleStore:
                                "DEFAULT 6 CHECK (max_guesses BETWEEN 1 AND 9)")
         if "allowed_words_json" not in columns:
             connection.execute("ALTER TABLE games ADD COLUMN allowed_words_json TEXT")
+        if "allowed_words_digest" not in columns:
+            connection.execute("ALTER TABLE games ADD COLUMN allowed_words_digest TEXT "
+                               "REFERENCES wordle_dictionaries(digest)")
         legacy = connection.execute("SELECT id,length,answer FROM games "
-                                    "WHERE status='active' AND allowed_words_json IS NULL").fetchall()
+                                    "WHERE status='active' AND allowed_words_json IS NULL "
+                                    "AND allowed_words_digest IS NULL").fetchall()
         if legacy:
-            defaults = json.loads(files("wordle").joinpath("words.json").read_text(encoding="utf-8"))
-            allowed = set(defaults["answers"]) | set(defaults["allowed_guesses"])
+            # These games predate vocabulary snapshots. Seed them with the old
+            # vocabulary, not the larger v0.2.7 package used for new games.
+            prior = json.loads(files("wordle").joinpath("word_space_upgrade.json").read_text(encoding="utf-8"))
+            allowed = set(prior["prior_seed_words"])
             for identifier, length, answer in legacy:
                 snapshot = sorted({word for word in allowed if len(word) == length} | {answer})
                 connection.execute("UPDATE games SET allowed_words_json=? WHERE id=?",
@@ -113,16 +122,25 @@ class WordleStore:
         if row is None:
             return None
         game = dict(row)
+        if game['allowed_words_digest'] is not None:
+            # Present the same immutable snapshot to game.py and legacy callers.
+            # Existing inline snapshots are preserved; only new games share blobs.
+            game['allowed_words_json'] = connection.execute(
+                "SELECT words_json FROM wordle_dictionaries WHERE digest=?",
+                (game['allowed_words_digest'],)).fetchone()[0]
         game["guesses"] = [dict(item) for item in connection.execute(
             "SELECT * FROM guesses WHERE game_id = ? ORDER BY turn_number", (game["id"],)
         )]
         return game
 
     def create(self, connection, group_id, user_id, answer, timestamp, max_guesses, allowed_words):
+        snapshot = json.dumps(sorted(allowed_words), separators=(',', ':'))
+        digest = sha256(snapshot.encode('utf-8')).hexdigest()
+        connection.execute("INSERT OR IGNORE INTO wordle_dictionaries VALUES (?,?)", (digest, snapshot))
         cursor = connection.execute(
-            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc, max_guesses, allowed_words_json) "
+            "INSERT INTO games (group_id, creator_id, length, answer, status, created_at_utc, max_guesses, allowed_words_digest) "
             "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-            (group_id, user_id, len(answer), answer, timestamp, max_guesses, json.dumps(sorted(allowed_words))),
+            (group_id, user_id, len(answer), answer, timestamp, max_guesses, digest),
         )
         return cursor.lastrowid
 

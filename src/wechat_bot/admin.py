@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import dictionaries
+from . import dictionaries, qa
 from . import groups as group_management
 from .store import BotStore
 from .stickers import MAX_SOURCE_BYTES, StickerService
@@ -95,6 +95,13 @@ class AdminService:
         return {'ok': True, **result}
 
     def _execute(self, connection, action, request):
+        if action == 'qa_list':
+            return qa.list_page(connection, search=request.get('search', ''), page=request.get('page', 1))
+        if action == 'qa_save':
+            return {'item': qa.save(connection, question=request.get('question'),
+                                    replies=request.get('replies'), identifier=request.get('id'))}
+        if action == 'qa_delete':
+            return qa.delete(connection, request.get('id'))
         if action in ('group_status', 'group_begin', 'group_cancel', 'group_accept', 'group_edit'):
             return group_management.manage(connection, self.config, action, request)
         if action == 'zxj_dictionary':
@@ -196,8 +203,10 @@ class AdminService:
                     legacy = hashlib.sha256(_sticker_helpers(root).gif_bytes(data, lambda: True)).hexdigest()
                 except (ValueError, RuntimeError, OSError):
                     pass
+        with self.store.transaction() as connection:
+            existing = self.stickers.find_source(connection, data, result['source_format'])
         prepared = self.stickers.prepare(result['data'], source_format=result['source_format'],
-            source_data=data, note=result['note'], legacy_digest=legacy)
+            source_data=data, note=result['note'], legacy_digest=legacy, existing=existing)
         actor = self.config.owner_id or self.config.account_id
         with self.store.transaction() as connection:
             item = self.stickers.add_local(connection, account_id=self.config.account_id,

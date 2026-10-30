@@ -1,7 +1,7 @@
 """Owner-edited dictionaries in the bot database, using caller transactions.
 
-Packaged JSON is only the initial seed. Updates never overwrite an initialized
-dictionary, including words which an owner has intentionally removed.
+Packaged JSON seeds new databases. The versioned word-space expansion adds only
+new seed words once, retaining prior seed deletions and existing word attributes.
 """
 from importlib.resources import files
 import json
@@ -49,6 +49,17 @@ def initialize(connection):
         connection.executemany("INSERT INTO wordle_words VALUES (?,?)", [
             (word, int(word in answers)) for word in sorted(answers | set(defaults["allowed_guesses"]))])
         connection.execute("INSERT INTO dictionary_state VALUES ('wordle')")
+    # Import this requested expansion once. Old seed words are excluded so an
+    # owner's old-seed deletions and existing answer choices survive the upgrade.
+    revision = 'word_space:6b2ce3432d5753d2b77724e0255ca6d4d019d34d'
+    if not connection.execute("SELECT 1 FROM dictionary_state WHERE name=?", (revision,)).fetchone():
+        defaults = json.loads(files("wordle").joinpath("words.json").read_text(encoding="utf-8"))
+        upgrade = json.loads(files("wordle").joinpath("word_space_upgrade.json").read_text(encoding="utf-8"))
+        answers = set(defaults['answers'])
+        additions = (answers | set(defaults['allowed_guesses'])) - set(upgrade['prior_seed_words'])
+        connection.executemany("INSERT OR IGNORE INTO wordle_words VALUES (?,?)",
+                               [(word, int(word in answers)) for word in sorted(additions)])
+        connection.execute("INSERT INTO dictionary_state VALUES (?)", (revision,))
 
 
 def characters(connection):

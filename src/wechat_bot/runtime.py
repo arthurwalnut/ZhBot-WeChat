@@ -9,7 +9,7 @@ from pathlib import Path
 import threading
 import time
 
-from wordle.render import render_board
+from . import board_cache
 from .gateway import Event, GatewayError, Outgoing, SendResult
 from .router import Router
 from .store import BotStore
@@ -80,6 +80,7 @@ class Runtime:
         self.error = ""
         self.receive_error = False
         self.last_receive = None
+        self._next_cache_cleanup = 0
 
     def receive(self, event):
         try:
@@ -133,9 +134,12 @@ class Runtime:
                 resource = self.gateway.fetch_sticker(event)
                 log.info("sticker_resource inbox=%s source=%s", row['id'],
                          json.dumps(resource.get('diagnostic', {}), ensure_ascii=False))
+                with self.store.transaction() as c:
+                    existing = self.stickers.find_source(c, resource.get('source_data') or resource['data'],
+                                                         resource['source_format'])
                 prepared = self.stickers.prepare(resource['data'],source_format=resource['source_format'],
                     note=resource.get('note',''),source_data=resource.get('source_data'),
-                    legacy_digest=resource.get('legacy_digest'))
+                    legacy_digest=resource.get('legacy_digest'),existing=existing)
             except Exception as error:
                 diagnostic = getattr(error, 'media_diagnostic', (resource or {}).get('diagnostic', {}))
                 source = getattr(error, 'source_data', (resource or {}).get('source_data'))
@@ -192,7 +196,7 @@ class Runtime:
         try:
             path = payload.get('path')
             if payload.get('board'):
-                path = str(render_board(payload['board'],self.config.data_dir / 'media/wordle' / f"reply-{row['id']}.png"))
+                path = str(board_cache.render_cached(payload['board'], self.config.data_dir))
         except Exception as error:
             result = SendResult('failed',type(error).__name__,True)
         else:
@@ -217,6 +221,25 @@ class Runtime:
                       (state,detail,now+2**(row['attempts']+1),row['id']))
         log.info("outbox=%s state=%s",row['id'],state)
         return True
+
+    def maintain_cache(self):
+        if time.monotonic() < self._next_cache_cleanup:
+            return
+        self._next_cache_cleanup = time.monotonic() + 3600
+        with self.delivery_lock:
+            with self.store.transaction() as c:
+                protected = {
+                    board_cache.board_key(payload['board'])
+                    for row in c.execute("SELECT payload FROM outbox WHERE state IN "
+                                         "('pending','sending','uncertain','failed')")
+                    if (payload := json.loads(row[0])).get('board')
+                }
+            try:
+                removed = board_cache.prune(self.config.data_dir, protected)
+                if removed:
+                    log.info('wordle_cache removed=%s', removed)
+            except OSError:
+                log.warning('Wordle cache cleanup deferred due to a file access error')
 
     def write_status(self):
         record = dict(state=self.state,pid=os.getpid(),updated_at=time.time(),error=self.error,
@@ -256,6 +279,7 @@ class Runtime:
             log.addHandler(handler)
             log.setLevel(logging.INFO)
             self.store.recover()
+            self.maintain_cache()
             stop_file = cfg.data_dir / 'stop.request'
             stop_file.unlink(missing_ok=True)
             sender = threading.Thread(target=self._sender,name='bot-outbox',daemon=True)
@@ -305,6 +329,7 @@ class Runtime:
                         self.state = 'DEGRADED'
                     else:
                         self.process_one()
+                    self.maintain_cache()
                     self.write_status()
                     self.shutdown.wait(0.25)
             except KeyboardInterrupt:

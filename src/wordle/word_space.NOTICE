@@ -1,0 +1,19 @@
+Word-list source for the v0.2.7 expansion
+
+Repository: https://github.com/andifathulms/word-space
+Revision: 6b2ce3432d5753d2b77724e0255ca6d4d019d34d
+Files: data/answers.txt (2315 words), data/guesses.txt (12972 words)
+Source statement: https://github.com/andifathulms/word-space/blob/6b2ce3432d5753d2b77724e0255ca6d4d019d34d/data/README.md
+
+The source attributes these alphabetically sorted, five-letter English word
+lists to Josh Wardle's original Wordle (2021), now owned by The New York Times
+Company, via the cfreshman mirrors linked in its data README. It describes its
+use as reproduction of a fact-like compilation for a noncommercial portfolio.
+The repository provides no explicit open-source licence for these lists. This
+notice records that statement; it does not relicense the data as MIT, Apache or
+public domain, or claim affiliation with the original game or rights holders.
+
+ZhBot uses only the word lists, preserving the answer/allowed-guess distinction
+and merging them with its existing 3-10 letter collection. No game code,
+branding or puzzle order was copied. Source hashes and the prior seed needed
+for a non-overwriting database upgrade are in word_space_upgrade.json.

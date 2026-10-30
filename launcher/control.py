@@ -93,6 +93,24 @@ def control(action):
         (config.data_dir / "stop.request").write_text(str(time.time()), encoding="ascii")
         return {"state": "STOP_REQUESTED", "version": __version__,
                 "reason": "已请求正常停止；等待发送与原生桥接清理。"}
+    if action == "shutdown":
+        # Serialize with start/restart and wait for the actual bot PID to exit.
+        # Closing the GUI is allowed only after this confirms normal shutdown.
+        with start_lock(config):
+            record = status(config)
+            if record.get("process_alive", False) is None:
+                raise ValueError("无法核验后台进程，管理窗口保持打开，请检查运行状态")
+            if record.get("process_alive") is True:
+                (config.data_dir / "stop.request").write_text(str(time.time()), encoding="ascii")
+                deadline = time.monotonic() + 70
+                while record.get("process_alive") is True:
+                    if time.monotonic() >= deadline:
+                        raise ValueError("后台仍在正常停止，管理窗口保持打开；请稍后重试退出")
+                    time.sleep(0.25)
+                    record = status(config)
+                if record.get("process_alive") is None:
+                    raise ValueError("无法核验停止结果，管理窗口保持打开，请检查运行状态")
+            return dict(record, state="STOPPED", process_alive=False, version=__version__)
     if action not in ("start", "check", "restart"):
         raise ValueError("Unknown launcher action")
     config.require_binding()
@@ -164,7 +182,7 @@ def start(config, python, config_path):
 def main():
     try:
         if len(sys.argv) != 2:
-            raise ValueError("Expected start, stop, restart, status, check or admin")
+            raise ValueError("Expected start, stop, shutdown, restart, status, check or admin")
         print(json.dumps(control(sys.argv[1]), ensure_ascii=False), flush=True)
         return 0
     except Exception as error:

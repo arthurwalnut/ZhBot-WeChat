@@ -7,6 +7,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Threading;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -16,6 +18,7 @@ internal static class Program
 {
     internal static readonly string Root = AppDomain.CurrentDomain.BaseDirectory;
     internal static JavaScriptSerializer Json { get { return new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 }; } }
+    internal static EventWaitHandle RestoreRequest;
     internal static string Call(string action) { return Invoke(action, null); }
     internal static string CallAdmin(Dictionary<string, object> data) { return Invoke("admin", Json.Serialize(data)); }
     private static string Invoke(string action, string data)
@@ -38,7 +41,7 @@ internal static class Program
                 byte[] bytes = new UTF8Encoding(false).GetBytes(data);
                 process.StandardInput.BaseStream.Write(bytes, 0, bytes.Length); process.StandardInput.Close();
             }
-            if (!process.WaitForExit(data == null && action != "restart" ? 15000 : 120000))
+            if (!process.WaitForExit(data == null && action != "restart" && action != "shutdown" ? 15000 : 120000))
             {
                 process.Kill(); // Only this control helper, never the bot or WeChat.
                 throw new IOException("本机操作超时，请刷新确认结果后再操作；机器人进程未被强制停止");
@@ -61,8 +64,23 @@ internal static class Program
             }
             catch (Exception error) { MessageBox.Show(error.Message, "ZhBot 入口检查失败"); return 1; }
         }
-        Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new LauncherForm(args.Length == 1 && args[0] == "--status-only")); return 0;
+        // A project has one management window/tray; the Python bot owns its own lock.
+        string key;
+        using (var sha = SHA256.Create()) key = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(Root).ToUpperInvariant()))).Replace("-", "");
+        using (var restore = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\ZhBot.Restore." + key))
+        using (var mutex = new Mutex(false, @"Local\ZhBot.Manager." + key))
+        {
+            bool owns;
+            try { owns = mutex.WaitOne(0); } catch (AbandonedMutexException) { owns = true; }
+            if (!owns) { restore.Set(); return 0; }
+            try
+            {
+                RestoreRequest = restore;
+                Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new LauncherForm(args.Length == 1 && args[0] == "--status-only")); return 0;
+            }
+            finally { mutex.ReleaseMutex(); RestoreRequest = null; }
+        }
     }
 }
 internal static class J
@@ -139,7 +157,14 @@ internal sealed class LauncherForm : Form
     private readonly TabControl tabs = new TabControl();
     private readonly ComboBox groups = new ComboBox(), members = new ComboBox();
     private readonly List<Choice> knownGroups = new List<Choice>(), knownMembers = new List<Choice>();
-    private readonly ListPane zxj, wins, stickers;
+    private readonly ListPane zxj, wins, stickers, answers;
+    private readonly TextBox answerSearch = new TextBox();
+    private readonly NotifyIcon tray = new NotifyIcon();
+    private readonly ContextMenuStrip trayMenu = new ContextMenuStrip();
+    private readonly System.Windows.Forms.Timer restoreTimer = new System.Windows.Forms.Timer();
+    private bool exitRequested, exitWorkerStarted, allowExit;
+    private FormWindowState restoreState = FormWindowState.Normal;
+    private Control workspace;
     private readonly PictureBox preview = new PictureBox();
     private readonly Label previewInfo = new Label();
     private readonly CheckBox showOriginal = new CheckBox();
@@ -150,6 +175,7 @@ internal sealed class LauncherForm : Form
     {
         Text = "ZhBot · 机器人管理"; Font = new Font("Microsoft YaHei UI", 10);
         AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(1080, 720); MinimumSize = new Size(900, 600);
+        Icon = SystemIcons.Application;
         StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(245, 247, 250);
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 12, 20, 10), ColumnCount = 1, RowCount = 5 };
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
@@ -161,7 +187,7 @@ internal sealed class LauncherForm : Form
         {
             using (var dialog = new GroupsDialog())
                 if (dialog.ShowDialog(this) == DialogResult.OK) { ExecuteControl("restart"); LoadOverview(true); }
-        }), Ui.Label("关闭管理窗口后，机器人继续后台运行") });
+        }), Ui.Label("关闭窗口隐藏到托盘 · 从托盘退出可停止机器人") });
         var filters = Ui.Bar(); groups.Width = 330; members.Width = 330;
         groups.DropDownStyle = members.DropDownStyle = ComboBoxStyle.DropDownList; groups.DropDownWidth = members.DropDownWidth = 550;
         filters.Controls.AddRange(new Control[] { Ui.Label("群"), groups, Ui.Label("成员"), members });
@@ -186,17 +212,35 @@ internal sealed class LauncherForm : Form
         showOriginal.Text = "预览原件"; showOriginal.Dock = DockStyle.Top; showOriginal.Height = 34; showOriginal.CheckedChanged += delegate { PreviewSticker(); };
         media.Panel2.Controls.Add(preview); media.Panel2.Controls.Add(previewInfo); media.Panel2.Controls.Add(showOriginal); Page("表情库").Controls.Add(media);
         media.SizeChanged += delegate { if (media.Width > 600) media.SplitterDistance = media.Width - 300; };
+        answers = new ListPane(new[] { "question", "reply_count" }, new[] { "问题", "候选回复数" }); answers.Grid.MultiSelect = false;
+        answers.Grid.Columns["question"].FillWeight = 85; answers.Grid.Columns["reply_count"].FillWeight = 15;
+        answerSearch.Width = 180;
+        answers.Tools.Controls.AddRange(new Control[] { Ui.Label("问题"), answerSearch, Ui.Button("搜索", delegate { answers.Page = 1; LoadAnswers(); }),
+            Ui.Button("新增问答", delegate { EditAnswer(null); }), Ui.Button("编辑选中", delegate { var item = answers.Selected(); if (item == null) MessageBox.Show(this, "先选择一条问答", "简单问答"); else EditAnswer(item); }), Ui.Button("删除选中", delegate { DeleteAnswer(); }) });
+        answers.Reload = LoadAnswers; answers.Grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e) { if (e.RowIndex >= 0) EditAnswer(answers.Selected()); };
+        var answerPage = Page("简单问答"); answerPage.Controls.Add(answers);
+        var answerNote = Ui.Label("适用于所有允许群 · 真实 @ 后精确匹配问题 · 多条回复随机选一条 · 不显示在帮助中"); answerNote.Dock = DockStyle.Bottom; answerNote.Height = 36; answerPage.Controls.Add(answerNote);
         tabs.SelectedIndexChanged += delegate { RefreshSelected(); };
         footer.Dock = DockStyle.Fill; footer.TextAlign = ContentAlignment.MiddleLeft; footer.ForeColor = Color.FromArgb(75, 89, 105); footer.Text = "本机管理 · 使用当前项目的运行数据库";
-        shell.Controls.Add(headline, 0, 0); shell.Controls.Add(controls, 0, 1); shell.Controls.Add(filters, 0, 2); shell.Controls.Add(tabs, 0, 3); shell.Controls.Add(footer, 0, 4); Controls.Add(shell);
+        shell.Controls.Add(headline, 0, 0); shell.Controls.Add(controls, 0, 1); shell.Controls.Add(filters, 0, 2); shell.Controls.Add(tabs, 0, 3); shell.Controls.Add(footer, 0, 4); Controls.Add(shell); workspace = shell;
         timer.Interval = 4000; timer.Tick += delegate { ExecuteControl("status"); };
         Shown += delegate { ExecuteControl(statusOnly ? "status" : "start"); LoadOverview(false); timer.Start(); };
-        FormClosed += delegate { timer.Stop(); timer.Dispose(); ClearPreview(); };
+        tray.Icon = SystemIcons.Application; tray.Text = "ZhBot · 正在检查运行状态"; tray.Visible = true;
+        trayMenu.Items.Add("打开窗口", null, delegate { RestoreWindow(); });
+        trayMenu.Items.Add("运行状态", null, delegate { RestoreWindow(); tabs.SelectedIndex = 0; ExecuteControl("status"); });
+        trayMenu.Items.Add(new ToolStripSeparator()); trayMenu.Items.Add("退出程序", null, delegate { RequestExit(); });
+        tray.ContextMenuStrip = trayMenu; tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) RestoreWindow(); };
+        restoreTimer.Interval = 250; restoreTimer.Tick += delegate { if (Program.RestoreRequest != null && Program.RestoreRequest.WaitOne(0)) RestoreWindow(); }; restoreTimer.Start();
+        FormClosing += delegate(object sender, FormClosingEventArgs e)
+        {
+            if (!allowExit && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; restoreState = WindowState == FormWindowState.Minimized ? FormWindowState.Normal : WindowState; Hide(); ShowInTaskbar = false; }
+        };
+        FormClosed += delegate { timer.Stop(); timer.Dispose(); restoreTimer.Stop(); restoreTimer.Dispose(); tray.Visible = false; tray.Dispose(); trayMenu.Dispose(); ClearPreview(); };
     }
     private TabPage Page(string title) { var p = new TabPage(title) { Padding = new Padding(12), BackColor = Color.White }; tabs.TabPages.Add(p); return p; }
     private void ResetLists() { zxj.Page = wins.Page = stickers.Page = 1; RefreshSelected(); }
     private void RefreshSelected()
-    { if (tabs.SelectedIndex == 1) zxj.Reload(); else if (tabs.SelectedIndex == 2) wins.Reload(); else if (tabs.SelectedIndex == 3) stickers.Reload(); }
+    { if (tabs.SelectedIndex == 1) zxj.Reload(); else if (tabs.SelectedIndex == 2) wins.Reload(); else if (tabs.SelectedIndex == 3) stickers.Reload(); else if (tabs.SelectedIndex == 4) LoadAnswers(); }
     private void PopulateMembers(string selected)
     {
         populating = true; members.Items.Clear(); members.Items.Add(new Choice("", "全部成员")); string group = Ui.Id(groups);
@@ -229,9 +273,10 @@ internal sealed class LauncherForm : Form
         var request = J.Request(action); request["group_id"] = Ui.Id(groups); request["user_id"] = Ui.Id(members); request["page"] = pane.Page;
         RunAdmin(request, delegate(Dictionary<string, object> result) { pane.Fill(result); if (pane == stickers) PreviewSticker(); });
     }
-    internal void RunAdmin(Dictionary<string, object> request, Action<Dictionary<string, object>> completed)
+    internal void RunAdmin(Dictionary<string, object> request, Action<Dictionary<string, object>> completed, Action finished = null)
     {
-        if (adminBusy) { footer.Text = "已有管理操作进行中，请等待完成后再操作"; return; }
+        if (exitRequested) { if (finished != null) finished(); return; }
+        if (adminBusy) { footer.Text = "已有管理操作进行中，请等待完成后再操作"; if (finished != null) finished(); return; }
         adminBusy = true; groups.Enabled = members.Enabled = tabs.Enabled = false;
         footer.Text = "正在读取或保存…"; var worker = new BackgroundWorker();
         worker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = Program.CallAdmin(request); };
@@ -247,11 +292,12 @@ internal sealed class LauncherForm : Form
                 footer.Text = "已更新  " + DateTime.Now.ToString("HH:mm:ss") + "  · 数据仅保存在本机项目中"; if (completed != null) completed(result);
             }
             catch (Exception error) { footer.Text = "操作未完成：" + error.Message; MessageBox.Show(this, error.Message, "管理操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            finally { if (finished != null) finished(); TryExitAfterWork(); }
         }; worker.RunWorkerAsync();
     }
     internal void ExecuteControl(string action)
     {
-        if (IsDisposed) return;
+        if (IsDisposed || exitRequested) return;
         if (controlBusy) { if (action == "restart") { pendingControl = action; footer.Text = "群配置已保存，等待当前状态检查后正常重启"; } return; }
         controlBusy = true; if (action != "status") start.Enabled = stop.Enabled = false;
         if (action == "restart") { groupRestartAwaitingReady = true; headline.Text = "群配置已保存，正在正常重启…"; footer.Text = "重启完成后核验运行状态，关闭窗口不会撤销已保存配置"; }
@@ -265,6 +311,7 @@ internal sealed class LauncherForm : Form
                 var record = Program.Json.Deserialize<Dictionary<string, object>>((string)e.Result); string state = J.Text(record, "state");
                 var meanings = new Dictionary<string, string> { { "READY", "机器人运行中" }, { "STARTING", "正在启动…" }, { "STOPPED", "机器人已停止" }, { "STOP_REQUESTED", "正在正常停止…" }, { "LOGIN_REQUIRED", "请登录绑定的机器人微信" }, { "RECONNECTING", "正在重新连接" }, { "STALE", "状态待核验" } };
                 headline.Text = (meanings.ContainsKey(state) ? meanings[state] : "需要检查运行状态") + "   ·   v" + J.Text(record, "version");
+                SetTrayState(state, meanings.ContainsKey(state) ? meanings[state] : "需要检查运行状态");
                 headline.ForeColor = state == "READY" ? Color.FromArgb(35, 104, 77) : Color.FromArgb(42, 55, 72);
                 if (J.Text(record, "stderr_log") != "") startupLog = J.Text(record, "stderr_log");
                 var lines = new StringBuilder(); lines.AppendLine("状态：" + state);
@@ -296,7 +343,7 @@ internal sealed class LauncherForm : Form
             }
             catch (Exception error)
             {
-                headline.Text = "入口状态读取失败"; details.Text = error.Message; start.Enabled = stop.Enabled = true;
+                headline.Text = "入口状态读取失败"; details.Text = error.Message; start.Enabled = stop.Enabled = true; SetTrayState("ERROR", "入口状态读取失败");
                 if (action == "restart")
                 {
                     groupRestartAwaitingReady = false; footer.Text = "群配置已保存，重启未确认成功，请先检查运行状态；确认已停止后可点击启动机器人";
@@ -305,9 +352,71 @@ internal sealed class LauncherForm : Form
             }
             finally
             {
-                if (!IsDisposed && pendingControl != "") { string next = pendingControl; pendingControl = ""; ExecuteControl(next); }
+                if (exitRequested) TryExitAfterWork();
+                else if (!IsDisposed && pendingControl != "") { string next = pendingControl; pendingControl = ""; ExecuteControl(next); }
             }
         }; worker.RunWorkerAsync();
+    }
+    internal void RestoreWindow()
+    {
+        ShowInTaskbar = true; Show(); if (WindowState == FormWindowState.Minimized || !Visible) WindowState = restoreState;
+        Activate(); BringToFront();
+    }
+    private void SetTrayState(string state, string description)
+    {
+        string value = "ZhBot · " + description + " (" + state + ")";
+        tray.Text = value.Length <= 63 ? value : value.Substring(0, 63);
+    }
+    private void RequestExit()
+    {
+        if (exitRequested) return;
+        foreach (Form dialog in OwnedForms) if (dialog.Visible)
+        {
+            RestoreWindow(); dialog.Activate(); MessageBox.Show(dialog, "请先完成并关闭当前编辑窗口，再从托盘退出", "退出程序"); return;
+        }
+        exitRequested = true; pendingControl = ""; timer.Stop(); workspace.Enabled = false; trayMenu.Items[3].Enabled = false;
+        footer.Text = "正在等待当前操作完成并正常停止机器人…"; SetTrayState("STOPPING", "正在正常退出"); TryExitAfterWork();
+    }
+    private void TryExitAfterWork()
+    {
+        if (!exitRequested || exitWorkerStarted || controlBusy || adminBusy || IsDisposed) return;
+        exitWorkerStarted = true; SetTrayState("STOPPING", "正在正常退出"); headline.Text = "正在正常停止机器人并退出…"; var worker = new BackgroundWorker();
+        worker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = Program.Call("shutdown"); };
+        worker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e)
+        {
+            worker.Dispose(); if (IsDisposed) return;
+            try
+            {
+                if (e.Error != null) throw e.Error;
+                var record = Program.Json.Deserialize<Dictionary<string, object>>((string)e.Result);
+                if (J.Text(record, "state") != "STOPPED" || J.Text(record, "process_alive") != "False")
+                    throw new IOException(J.Text(record, "error") == "" ? "后台停止结果尚未确认" : J.Text(record, "error"));
+                allowExit = true; Close();
+            }
+            catch (Exception error)
+            {
+                exitRequested = exitWorkerStarted = false; workspace.Enabled = true; trayMenu.Items[3].Enabled = true; timer.Start();
+                SetTrayState("ERROR", "退出未完成"); footer.Text = "退出未完成：" + error.Message; RestoreWindow();
+                MessageBox.Show(this, error.Message + "\r\n管理窗口和托盘继续保留，可查看运行状态后重试退出", "退出未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }; worker.RunWorkerAsync();
+    }
+    private void LoadAnswers()
+    {
+        var request = J.Request("qa_list"); request["page"] = answers.Page; request["search"] = answerSearch.Text;
+        RunAdmin(request, delegate(Dictionary<string, object> result) { answers.Fill(result); });
+    }
+    private void EditAnswer(Dictionary<string, object> item)
+    {
+        using (var dialog = new AnswerDialog(this, item))
+            if (dialog.ShowDialog(this) == DialogResult.OK) { answers.Page = 1; LoadAnswers(); }
+    }
+    private void DeleteAnswer()
+    {
+        var item = answers.Selected(); if (item == null) { MessageBox.Show(this, "先选择一条问答", "简单问答"); return; }
+        if (MessageBox.Show(this, "删除问题“" + J.Text(item, "question") + "”及其候选回复？", "删除问答", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        var request = J.Request("qa_delete"); request["id"] = J.Number(item, "id", 0);
+        RunAdmin(request, delegate { LoadAnswers(); });
     }
     private void EditCharacters()
     {
@@ -350,6 +459,71 @@ internal sealed class LauncherForm : Form
             previewStream = new MemoryStream(File.ReadAllBytes(path)); preview.Image = Image.FromStream(previewStream);
         }
         catch (Exception) { ClearPreview(); previewInfo.Text += "\r\n当前格式无法在 Windows 预览中显示"; }
+    }
+}
+internal sealed class AnswerDialog : Form
+{
+    private readonly LauncherForm owner; private readonly int id;
+    private readonly TextBox question = new TextBox(), reply = new TextBox();
+    private readonly ListBox candidates = new ListBox(); private readonly List<string> replies = new List<string>();
+    private readonly Label count = Ui.Label(""); private readonly Button save, add, remove;
+    private bool changing, saving;
+    internal AnswerDialog(LauncherForm owner, Dictionary<string, object> item)
+    {
+        this.owner = owner; id = item == null ? 0 : J.Number(item, "id", 0);
+        Text = id == 0 ? "新增简单问答" : "编辑简单问答"; Font = owner.Font; ClientSize = new Size(820, 540); MinimumSize = new Size(700, 490); StartPosition = FormStartPosition.CenterParent;
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 5 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 55)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.Controls.Add(Ui.Label("问题 · 不需要填写 @机器人"), 0, 0); question.Dock = DockStyle.Fill; question.MaxLength = 128; layout.Controls.Add(question, 0, 1);
+        var note = Ui.Label("精确匹配问题，适用于所有允许群；不出现在帮助列表\r\n每个问题可保存 1～20 条候选回复，每条最多 700 UTF-8 字节，正文可换行"); note.Dock = DockStyle.Fill; layout.Controls.Add(note, 0, 2);
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38)); content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
+        candidates.Dock = DockStyle.Fill; candidates.IntegralHeight = false; candidates.HorizontalScrollbar = true;
+        reply.Dock = DockStyle.Fill; reply.Multiline = true; reply.ScrollBars = ScrollBars.Vertical; reply.AcceptsReturn = true;
+        candidates.SelectedIndexChanged += delegate { if (!changing) { changing = true; reply.Text = candidates.SelectedIndex < 0 ? "" : replies[candidates.SelectedIndex]; changing = false; UpdateCount(); } };
+        reply.TextChanged += delegate
+        {
+            int index = candidates.SelectedIndex; if (changing || index < 0) return;
+            replies[index] = reply.Text; changing = true; candidates.Items[index] = Preview(index); changing = false; UpdateCount();
+        };
+        add = Ui.Button("添加候选", delegate { if (replies.Count < 20) { replies.Add(""); candidates.Items.Add(Preview(replies.Count - 1)); candidates.SelectedIndex = replies.Count - 1; reply.Focus(); UpdateCount(); } });
+        remove = Ui.Button("移除候选", delegate
+        {
+            int index = candidates.SelectedIndex; if (index < 0) return;
+            changing = true; replies.RemoveAt(index); candidates.Items.Clear(); for (int i = 0; i < replies.Count; i++) candidates.Items.Add(Preview(i)); changing = false;
+            if (replies.Count > 0) candidates.SelectedIndex = Math.Min(index, replies.Count - 1); else reply.Clear(); UpdateCount();
+        });
+        var buttons = Ui.Bar(); buttons.Dock = DockStyle.Fill; buttons.Controls.AddRange(new Control[] { add, remove }); count.Dock = DockStyle.Fill;
+        content.Controls.Add(candidates, 0, 0); content.Controls.Add(reply, 1, 0); content.Controls.Add(buttons, 0, 1); content.Controls.Add(count, 1, 1); layout.Controls.Add(content, 0, 3);
+        var bottom = Ui.Bar(); bottom.Dock = DockStyle.Fill; save = Ui.Button("保存问答", delegate { Save(); }); bottom.Controls.Add(save); bottom.Controls.Add(Ui.Label("收到同一个问题时，从候选回复中随机选取一条")); layout.Controls.Add(bottom, 0, 4); Controls.Add(layout);
+        object values; if (item != null && item.TryGetValue("replies", out values)) replies.AddRange(J.Strings(values));
+        if (replies.Count == 0) replies.Add(""); for (int i = 0; i < replies.Count; i++) candidates.Items.Add(Preview(i));
+        question.Text = item == null ? "" : J.Text(item, "question"); candidates.SelectedIndex = 0; UpdateCount();
+        FormClosing += delegate(object sender, FormClosingEventArgs e) { if (saving) e.Cancel = true; };
+    }
+    private string Preview(int index)
+    {
+        string text = replies[index].Replace("\r", "").Replace("\n", " / ");
+        return (index + 1) + "  " + (text == "" ? "（空白回复）" : text.Length <= 30 ? text : text.Substring(0, 30) + "…");
+    }
+    private void UpdateCount()
+    {
+        count.Text = "当前回复 " + Encoding.UTF8.GetByteCount(reply.Text) + " / 700 字节";
+        reply.Enabled = candidates.SelectedIndex >= 0 && !saving; add.Enabled = replies.Count < 20 && !saving; remove.Enabled = candidates.SelectedIndex >= 0 && !saving;
+    }
+    private void Save()
+    {
+        if (saving) return;
+        if (String.IsNullOrWhiteSpace(question.Text) || replies.Count == 0) { MessageBox.Show(this, "请填写问题和至少一条回复", "保存问答"); return; }
+        foreach (string value in replies) if (String.IsNullOrWhiteSpace(value) || Encoding.UTF8.GetByteCount(value) > 700) { MessageBox.Show(this, "每条候选回复需要非空，且最多 700 UTF-8 字节", "保存问答"); return; }
+        var request = J.Request("qa_save"); if (id != 0) request["id"] = id; request["question"] = question.Text; request["replies"] = replies.ToArray();
+        saving = true; question.Enabled = candidates.Enabled = reply.Enabled = save.Enabled = add.Enabled = remove.Enabled = false;
+        owner.RunAdmin(request, delegate { saving = false; DialogResult = DialogResult.OK; Close(); }, delegate
+        {
+            if (IsDisposed) return; saving = false; question.Enabled = candidates.Enabled = save.Enabled = true; UpdateCount();
+        });
     }
 }
 internal sealed class CharactersDialog : Form
