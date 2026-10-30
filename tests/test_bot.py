@@ -34,7 +34,7 @@ def setup(tmp_path, *, stickers=False, gateway=None):
     return Runtime(config, gateway or FakeGateway())
 
 
-def event(identifier, text="随机zxj", sender="wxid_alice", **changes):
+def event(identifier, text="今日zxj", sender="wxid_alice", **changes):
     original = Event(account_id="wxid_robot", chat_id="123@chatroom", chat_type="group",
         sender_id=sender, native_message_id=str(identifier), received_at=time.time(), message_type="text",
         text=text if changes.get("chat_type") == "private" else "@测试机器人\u2005" + text,
@@ -74,8 +74,8 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
         event(7, sender_id=""),
         event(8, native_message_id=""),
         event(9, account_id="wxid_other"),
-        event(10, message_type="app", text="<refermsg>随机zxj</refermsg>"),
-        event(11, text="引用：随机zxj"),
+        event(10, message_type="app", text="<refermsg>今日zxj</refermsg>"),
+        event(11, text="引用：今日zxj"),
         event(12, text="暂停群功能", chat_type="private", chat_id="wxid_bob", sender="wxid_bob"),
     ):
         runtime.receive(value)
@@ -94,6 +94,16 @@ def test_identity_native_mentions_scope_and_owner_management(tmp_path):
     assert '帮助' in json.loads(rows(runtime,"outbox")[-1]['payload'])['text']
     process(runtime, event(18, text='我的zxj'))
     assert f"{date}：{saved['result']}" in json.loads(rows(runtime,'outbox')[-1]['payload'])['text']
+    # The renamed command keeps the same daily result; the old name cannot draw.
+    before = rows(runtime, 'draws')
+    process(runtime, event(19, text='随机zxj', sender='wxid_dave'))
+    assert rows(runtime, 'draws') == before
+    assert '未识别指令' in json.loads(rows(runtime, 'outbox')[-1]['payload'])['text']
+    process(runtime, event(20, text='帮助'))
+    help_text = json.loads(rows(runtime, 'outbox')[-1]['payload'])['text']
+    assert '今日zxj' in help_text and '随机zxj' not in help_text
+    process(runtime, event(21, text='今日zxj', sender='wxid_dave'))
+    assert len(rows(runtime, 'draws')) == len(before) + 1
     assert all(item["chat_id"] in {"123@chatroom", "wxid_owner"} for item in rows(runtime, "outbox"))
     assert all('。' not in json.loads(item['payload']).get('text', '') for item in rows(runtime, 'outbox'))
 
@@ -169,8 +179,8 @@ def test_multiplayer_game_snapshots_png_targets_and_persistent_sticker_channel(t
     runtime.receive(winner)
     assert not runtime.router.process_one()
     process(runtime, event(4, "猜词战绩", sender="wxid_bob"))
-    process(runtime, event(5, "随机zxj"))
-    process(runtime, event(6, "随机zxj", sender="wxid_bob"))
+    process(runtime, event(5, "今日zxj"))
+    process(runtime, event(6, "今日zxj", sender="wxid_bob"))
     payloads = [json.loads(item["payload"]) for item in rows(runtime, "outbox")]
     boards = [item["board"] for item in payloads if item["kind"] == "image"]
     assert [len(board["guesses"]) for board in boards] == [0, 1, 2]

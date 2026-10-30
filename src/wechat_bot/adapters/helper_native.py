@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from ..gateway import Event, GatewayError, Outgoing, SendResult
+from .member_names import read_group_contact_name
 
 UPSTREAM_COMMIT = "3e65e4bdaff438dc616f32d412175842fa138763"
 BRIDGES = {
@@ -329,18 +330,9 @@ class HelperNative:
                         # ServiceFacade.send_at_text supplies these visible labels
                         # before calling NativeTextBackend. This adapter uses the
                         # backend directly, so it must supply the same text format.
-                        try:
-                            rows = backend.group_members(outgoing.chat_id) or ()
-                        except (OSError, ValueError, RuntimeError):
-                            rows = ()
-                        names = {row['wxid']: row.get('nickname', '') for row in rows}
-                        labels = []
-                        for member in outgoing.mentioned_ids:
-                            name = names.get(member)
-                            if (not isinstance(name, str) or not name.strip() or len(name) > 64 or
-                                    any(ch in name for ch in ('\n', '\r', '\0'))):
-                                name = member
-                            labels.append('@' + name + '\u2005')
+                        labels = self._mention_labels(outgoing.chat_id, outgoing.mentioned_ids)
+                        if labels is None:
+                            return SendResult('failed', 'MENTION_NAME_UNAVAILABLE', retryable=True)
                         text = ' '.join(labels) + '\n' + text
                     encoded = text.encode("utf-8")
                     if not 1 <= len(encoded) <= 1023 or b"\0" in encoded:
@@ -379,6 +371,38 @@ class HelperNative:
                 return SendResult("uncertain", "helper did not confirm native completion; do not resend")
             except Exception as error:
                 return SendResult("uncertain", type(error).__name__ + ": native call outcome unknown")
+
+    def _mention_labels(self, room, members):
+        """Resolve fresh names per room; native IDs remain the mention targets."""
+        from wxbot_framework.contacts import read_contact_name
+
+        def usable(name):
+            return (isinstance(name, str) and name.strip() and len(name) <= 64
+                    and not any(ord(ch) < 32 or ord(ch) == 127 for ch in name))
+
+        backend, labels = self._backend, []
+        try:
+            with backend.raw._calls:
+                backend.raw._check_account(force=True)
+                rows = backend.group_members(room) or ()
+                directory = {row['wxid']: row for row in rows}
+                channel = backend.raw._channel
+                for member in members:
+                    row = directory.get(member, {})
+                    name = next((row[key] for key in ('group_nickname', 'wechat_name')
+                                 if usable(row.get(key))), None)
+                    if name is None and channel is not None:
+                        args = (channel.read_memory, channel.core_base, member)
+                        name = read_contact_name(*args, expected_account=self.account_id)
+                        if not usable(name):
+                            name = read_group_contact_name(*args, expected_account=self.account_id)
+                    if not usable(name):
+                        return None
+                    labels.append('@' + name.strip() + '\u2005')
+                backend.raw._check_account(force=True)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return labels
 
     def fetch_sticker(self, event: Event):
         if (self.binding_mode or event.account_id != self.account_id or event.message_type != "sticker" or

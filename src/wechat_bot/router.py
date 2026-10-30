@@ -12,7 +12,7 @@ from .stickers import WAIT_SECONDS
 from . import dictionaries
 
 ADMIN = {"机器人状态", "暂停群功能", "恢复群功能"}
-COMMAND = re.compile(r"(?:帮助|随机zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是[^\r\n]{0,128}|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
+COMMAND = re.compile(r"(?:帮助|今日zxj|我的zxj(?: [1-9][0-9]{0,5})?|猜词(?: [0-9]{1,2})?|我猜是[^\r\n]{0,128}|猜词棋盘|猜词战绩|结束猜词|添加表情包|取消添加|随机表情包|我的表情包(?: [1-9][0-9]{0,5})?|删除表情包 [1-9][0-9]*)\Z")
 GUESS = re.compile(r"我猜是[ \t\u3000]*([A-Za-z]+)\Z")
 
 
@@ -77,13 +77,13 @@ class Router:
             if text == "帮助":
                 commands = ["帮助"]
                 if cfg.zxj:
-                    commands += ["随机zxj", "我的zxj [页码]"]
+                    commands += ["今日zxj", "我的zxj [页码]"]
                 if cfg.wordle:
                     commands += ["猜词 [3~10]（默认 5）", "我猜是 apple（空格可省略）", "猜词棋盘", "猜词战绩", "结束猜词"]
                 if cfg.stickers and self.stickers:
                     commands += ["添加表情包", "取消添加", "随机表情包", "我的表情包 [页码]", "删除表情包 编号"]
                 return reply("请真实 @机器人 后输入：\n" + "\n".join(commands))
-            if text == "随机zxj" and cfg.zxj:
+            if text == "今日zxj" and cfg.zxj:
                 result = draw(event.sender_id, connection=c, now=datetime.fromtimestamp(event.received_at,UTC),
                               characters=dictionaries.characters(c))
                 date = datetime.strptime(result['business_date'], '%Y-%m-%d').strftime('%y.%m.%d')

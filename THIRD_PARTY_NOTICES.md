@@ -1,5 +1,13 @@
 # 第三方来源与许可
 
+## v0.2.6 非好友群成员名称补充
+
+`src/wechat_bot/adapters/member_names.py` 移植自 helper 提交
+[`7302da4721ee87199d7828a134a3d7ac846799d1`](https://github.com/Prometheus-first/helper/commit/7302da4721ee87199d7828a134a3d7ac846799d1)
+中 `wxbot_framework/contacts.py` 的非好友 LRU 名称读取函数。原始完整许可及第三方声明分别随源码保留为 `helper_names.LICENSE`、`helper_names.NOTICE`，同时包含于 wheel、源码包及 Windows ZIP。该文件遵循 `LicenseRef-helper-noncommercial-1.0`。
+
+本地修改：改为从固定 helper 导入读取工具；在上游仅支持 4.2.0.11 的基础上，补入本机实际核验的 4.1.15.56。后者按原生成员 ID 检索已注明的缓存、复核对象 ID 并双读结构，已取得实际非好友成员名称；用户提供的具体成员与名称对照一致。其他构建不启用这段补充逻辑。生产 helper 仍固定于下方原提交，DLL、构建指纹检查和生命周期组件未更改；本次没有引入新上游其他功能。
+
 本项目通过标准包依赖调用下列组件；v0.2.0 另在独立目录保留 helper 固定提交，说明见下文。版本来自本机项目虚拟环境；许可标识来自已安装发行包的元数据和附带许可文件。完整依赖约束见 `requirements-lock.txt`。
 
 | 组件 | 实测版本 | 包声明许可 | 用途与来源 |

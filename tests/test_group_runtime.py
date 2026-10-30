@@ -62,7 +62,7 @@ def test_native_registration_is_narrow_and_requires_local_acceptance_and_restart
     assert cfg.group_allowlist == ('old@chatroom',)  # Existing runtime is unchanged until restart.
     gateway = FakeGateway()
     restarted = Runtime(updated, gateway)
-    event = replace(candidate, native_message_id='102', received_at=time.time(), text='@测试机器人\u2005随机zxj')
+    event = replace(candidate, native_message_id='102', received_at=time.time(), text='@测试机器人\u2005今日zxj')
     restarted.receive(event)
     assert restarted.process_one()
     with restarted.store.transaction() as c:
