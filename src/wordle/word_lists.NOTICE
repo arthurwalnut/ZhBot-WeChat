@@ -1,0 +1,24 @@
+Word-list source for the local v0.2.7.1 expansion
+
+Repository: https://github.com/jonathanwelton/word-lists
+Revision: 89401c32360e839f36cbe37716e14c5456ce8034
+Author named in package.json: Jonathan Welton
+Package version: 1.0.0
+Files: 3-letter-words.json through 10-letter-words.json
+
+The pinned package.json declares "license": "ISC". The repository contains no
+standalone license text. This notice records that declaration without adding
+an invented copyright notice or an inferred license grant.
+
+The pinned README attributes the lists to words_dictionary.json from
+https://github.com/dwyl/english-words . Its LICENSE.md was inspected at
+20f5cc9b3f0ccc8ce45d814c532b7c2031bba31c and is preserved verbatim in
+word_lists_origin.LICENSE (Unlicense). This is the observed license of the
+named source, not proof of the exact historical revision used by the splitter.
+
+ZhBot merges the 248005 lowercase ASCII entries of lengths 3 through 10 with
+its existing seed: 11845 already present, 236160 new, 250871 total allowed
+guesses. Existing answer/guess-only roles are retained; new words enter both
+the answer and allowed pools. No application code was copied. Source file
+SHA-256 / Git blob hashes, counts and the prior seed used for the one-time
+database migration are recorded in word_lists_upgrade.json.

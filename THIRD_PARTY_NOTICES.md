@@ -1,5 +1,13 @@
 # 第三方来源与许可
 
+## v0.2.7.1 3～10 字母数据增补
+
+按用户指定，从 [jonathanwelton/word-lists](https://github.com/jonathanwelton/word-lists/tree/89401c32360e839f36cbe37716e14c5456ce8034) 固定提交 `89401c32360e839f36cbe37716e14c5456ce8034` 读取 `3-letter-words.json` 至 `10-letter-words.json`，共 248,005 个小写 ASCII 词。与 v0.2.7 种子合并去重，原词条和角色保留，未复制应用代码。
+
+该提交的 [package.json](https://github.com/jonathanwelton/word-lists/blob/89401c32360e839f36cbe37716e14c5456ce8034/package.json) 标明作者 Jonathan Welton、版本 1.0.0、许可 ISC；仓库没有独立许可正文。[README](https://github.com/jonathanwelton/word-lists/blob/89401c32360e839f36cbe37716e14c5456ce8034/README.md) 声明词条抽取自 `dwyl/english-words` 的 `words_dictionary.json`。所注明来源的 [LICENSE.md](https://github.com/dwyl/english-words/blob/20f5cc9b3f0ccc8ce45d814c532b7c2031bba31c/LICENSE.md) 为 Unlicense，本次保留其原文；未将此次核对的来源提交称为拆分仓库当年使用的具体版本。
+
+声明与许可原文随包保存为 `wordle/word_lists.NOTICE`、`wordle/word_lists_origin.LICENSE`；每份输入的 Git blob / SHA-256、数量、重叠统计和升级前种子记录在 `word_lists_upgrade.json` 中。
+
 ## v0.2.7 Wordle 数据增补
 
 按用户指定，从 [andifathulms/word-space](https://github.com/andifathulms/word-space/tree/6b2ce3432d5753d2b77724e0255ca6d4d019d34d/data) 固定提交 `6b2ce3432d5753d2b77724e0255ca6d4d019d34d` 的 `data/answers.txt`（2,315 词）与 `data/guesses.txt`（12,972 词）合并普通五字母词条，未复制其应用代码或界面。原有其他长度词库保留。

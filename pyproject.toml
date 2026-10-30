@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astra-wechat-lab"
-version = "0.2.7"
+version = "0.2.7.1"
 description = "Native WeChat group games with transactional inbox and outbox"
 requires-python = ">=3.12"
 dependencies = ["Pillow>=11", "tzdata>=2025.2"]
@@ -19,7 +19,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 zxj = ["characters.json"]
-wordle = ["*.json", "*.NOTICE"]
+wordle = ["*.json", "*.NOTICE", "*.LICENSE"]
 wechat_reader = ["windows_ocr.ps1"]
 wechat_bot = ["adapters/*.LICENSE", "adapters/*.NOTICE"]
 

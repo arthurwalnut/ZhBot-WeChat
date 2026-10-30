@@ -1,7 +1,7 @@
 """Owner-edited dictionaries in the bot database, using caller transactions.
 
-Packaged JSON seeds new databases. The versioned word-space expansion adds only
-new seed words once, retaining prior seed deletions and existing word attributes.
+Packaged JSON seeds new databases. Versioned expansions add only new seed words
+once, retaining prior seed deletions and existing word attributes.
 """
 from importlib.resources import files
 import json
@@ -53,8 +53,19 @@ def initialize(connection):
     # owner's old-seed deletions and existing answer choices survive the upgrade.
     revision = 'word_space:6b2ce3432d5753d2b77724e0255ca6d4d019d34d'
     if not connection.execute("SELECT 1 FROM dictionary_state WHERE name=?", (revision,)).fetchone():
-        defaults = json.loads(files("wordle").joinpath("words.json").read_text(encoding="utf-8"))
         upgrade = json.loads(files("wordle").joinpath("word_space_upgrade.json").read_text(encoding="utf-8"))
+        # Keep the older import fixed to its own seed, including direct upgrades
+        # from v0.2.6. Later additions belong to their own migration marker.
+        prior = json.loads(files("wordle").joinpath("word_lists_upgrade.json").read_text(encoding="utf-8"))
+        answers = set(prior['prior_seed_answers'])
+        additions = set(prior['prior_seed_words']) - set(upgrade['prior_seed_words'])
+        connection.executemany("INSERT OR IGNORE INTO wordle_words VALUES (?,?)",
+                               [(word, int(word in answers)) for word in sorted(additions)])
+        connection.execute("INSERT INTO dictionary_state VALUES (?)", (revision,))
+    revision = 'word_lists:89401c32360e839f36cbe37716e14c5456ce8034'
+    if not connection.execute("SELECT 1 FROM dictionary_state WHERE name=?", (revision,)).fetchone():
+        defaults = json.loads(files("wordle").joinpath("words.json").read_text(encoding="utf-8"))
+        upgrade = json.loads(files("wordle").joinpath("word_lists_upgrade.json").read_text(encoding="utf-8"))
         answers = set(defaults['answers'])
         additions = (answers | set(defaults['allowed_guesses'])) - set(upgrade['prior_seed_words'])
         connection.executemany("INSERT OR IGNORE INTO wordle_words VALUES (?,?)",
