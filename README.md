@@ -83,7 +83,7 @@ CLI 的 `bind --group` **替换整个群白名单**，需逐个传入所有要�
 
 在同一机器人账号下，多群共享一个进程和数据库；Wordle 对局/战绩、表情池按群隔离，zxj 每日结果按成员全局共享。代码和隔离数据测试已覆盖新群登记、确认、重启后的路由及移除后的待发检查；目标群的实际收发与后台条件仍以 [验收记录](docs/COMPATIBILITY.md) 为准。
 
-新电脑部署需要完整项目、Python 3.12 x64、虚拟环境、Git、固定 helper 源码及其 `.git`/许可、机器人登录和真实绑定，单独复制 EXE 不构成完整安装。仅把旧 `runtime` 复制到另一目录也不构成数据迁移：配置和旧表情元数据含绝对路径，需单独迁移核对。锁屏、托盘、远控断开及掉登录恢复目前没有完整真机验收，不据此宣称任意电脑无人值守可用。
+新电脑部署需要完整项目、Python 3.12 x64、虚拟环境、Git、固定 helper 源码及其 `.git`/许可、机器人登录和真实绑定，单独复制 EXE 不构成完整安装。仅把旧 `runtime` 复制到另一目录也不构成数据迁移：配置和旧表情元数据含绝对路径，需单独迁移核对。锁屏、微信隐藏至托盘、远控断开及掉登录恢复目前没有完整真机验收，不据此宣称任意电脑无人值守可用。
 
 ## 启动、状态与停止
 
@@ -178,7 +178,7 @@ Wordle 开放 3～10 字母，使用项目维护的词库；保留原 5 字母�
 
 已下载且通过来源校验、但后续转换失败的原件保存在 `media/stickers/unprocessed/` 供本机诊断，不登记为成功表情、不进入随机池。轮转日志记录资源格式、体积、尺寸和摘要，不写 CDN 参数或原始 XML。下载失败或未通过完整性校验的内容不会作为原件保存。
 
-旧条目及发送文件保留，重新上传可补存原件并识别旧版 32 色转换的重复项；已有条目不会自动换成新发送副本。要替换旧副本，由添加者或主人先删除对应条目，再重新上传原表情。旧版静态原生发送已有手机确认；新版 256 色副本、动画及入库后重启重发的实测情况见兼容表。删除先移出随机池，保留物理文件以避免删除仍被待发回复引用的资源；当前没有自动磁盘回收任务。
+旧条目及发送文件保留，重新上传可补存原件并识别旧版 32 色转换的重复项；已有条目不会自动换成新发送副本。要替换旧副本，由添加者或主人先删除对应条目，再重新上传原表情。旧版静态原生发送已有手机确认；新版 256 色副本、动画及入库后重启重发的实测情况见兼容表。删除先移出随机池，保留物理文件以避免删除仍被待发回复引用的资源；当前表情文件不自动回收，Wordle 专用棋盘缓存按上文规则清理。
 
 ## 事务、重试与恢复
 
@@ -196,7 +196,7 @@ outbox 状态为 `pending / sending / accepted / failed / uncertain / expired`�
 
 调用关系：`ZhBot.exe → launcher/control.py → .venv Python → wechat_bot.__main__ → Runtime → helper_native 接收 → Router → zxj / Wordle / stickers → SQLite outbox → 渲染与原生发送`。命令行与 EXE 调用相同运行入口。helper 的默认应用入口与插件管理器不启动；防撤回、朋友圈、图库和自动加好友插件不进入运行链。
 
-本机管理调用：`ZhBot.exe → launcher/control.py admin（UTF-8 JSON 标准输入）→ AdminService → dictionaries / StickerService / SQLite`。管理与机器人共用事务数据库；Wordle 开局词库另存于 `games.allowed_words_json`，本机表情来源另存于 `stickers.origin`。
+本机管理调用：`ZhBot.exe → launcher/control.py admin（UTF-8 JSON 标准输入）→ AdminService → dictionaries / qa / StickerService / SQLite`。管理与机器人共用事务数据库；Wordle 旧局保留 `games.allowed_words_json`，新局以 `games.allowed_words_digest` 引用 `wordle_dictionaries` 共享快照；简单问答保存在 `simple_qa`，本机表情来源另存于 `stickers.origin`。
 
 | 文件 | 职责 |
 | --- | --- |
