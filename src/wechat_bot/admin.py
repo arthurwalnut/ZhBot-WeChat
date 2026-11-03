@@ -80,9 +80,11 @@ class AdminService:
         page = min(page, pages)
         return {'items': items[(page - 1) * size:page * size], 'page': page, 'pages': pages, 'total': total}
 
-    def _preview(self, path):
-        target = Path(path).resolve()
-        return str(target) if target.is_relative_to(self.stickers.directory) and target.is_file() else ''
+    def _preview(self, item, *, original=False):
+        try:
+            return str(self.stickers.resolve_path(item, original=original, verify=False))
+        except (OSError, ValueError):
+            return ''
 
     def execute(self, request):
         if not isinstance(request, dict):
@@ -170,8 +172,8 @@ class AdminService:
                       'source_format': row['source_format'], 'width': row['width'], 'height': row['height'],
                       'frames': row['frames'], 'bytes': row['bytes'],
                       'origin': '本机导入' if row['origin'] == 'local' else '微信上传',
-                      'preview_path': self._preview(row['path']),
-                      'original_path': self._preview(row['source_path']) if row['source_path'] else ''}
+                      'preview_path': self._preview(row),
+                      'original_path': self._preview(row, original=True) if row['source_path'] else ''}
                      for row in connection.execute('SELECT * FROM stickers WHERE account_id=? AND deleted=0 ORDER BY id DESC', (self.config.account_id,))
                      if row['chat_id'] in self.config.group_allowlist and (not group or row['chat_id'] == group)
                      and (not user or row['sender_id'] == user)]

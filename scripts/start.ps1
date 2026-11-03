@@ -1,10 +1,13 @@
 param([string]$ConfigPath = '')
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows_environment.ps1')
+Assert-WindowsDesktop -Interactive
 $PythonPath = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
-if (-not $ConfigPath) { $ConfigPath = Join-Path $ProjectRoot 'runtime\config.bot.toml' }
-$ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
+$ConfigPath = Resolve-ProjectConfig -ProjectRoot $ProjectRoot -ConfigPath $ConfigPath
 if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) { throw 'Project Python environment missing. Run the README installation commands first.' }
+& $PythonPath -I (Join-Path $ProjectRoot 'launcher\environment.py') $ProjectRoot
+if ($LASTEXITCODE -ne 0) { throw 'Project environment moved or invalid. Run scripts/install.ps1 on this machine first.' }
 $LogDirectory = Join-Path $ProjectRoot 'runtime\logs'
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss-ffff'

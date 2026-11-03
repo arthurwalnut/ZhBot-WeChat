@@ -26,6 +26,8 @@ if (Test-Path -LiteralPath $destination) {
 } else {
     Invoke-GitChecked -GitArguments @('clone', '--no-checkout', $manifest.repository, $destination)
     $gitBase = @('-c', "safe.directory=$($destination.Replace('\','/'))", '-C', $destination)
+    # The locked commit may no longer be reachable from upstream's default refs.
+    Invoke-GitChecked -GitArguments ($gitBase + @('fetch', '--no-tags', 'origin', $manifest.commit))
     Invoke-GitChecked -GitArguments ($gitBase + @('checkout', '--detach', $manifest.commit))
 }
 

@@ -40,6 +40,11 @@ def _media_diagnostic(data):
 def verify_dependency(helper_root):
     """Check source revision and packaged DLLs before importing upstream code."""
     root = Path(helper_root).resolve()
+    # The pinned bridge writes this name into a WCHAR[260] field. Check before
+    # invoking any upstream loader, including on systems with long paths enabled.
+    report = root / '.runtime/native_requests' / ('0' * 32 + '.json')
+    if len(str(report).encode('utf-16-le')) // 2 >= 260:
+        raise GatewayError('DEPENDENCY_INVALID', 'helper 路径过长，超过原生桥接限制；请迁移到较短的本地目录')
     command = ["git", "-c", f"safe.directory={root.as_posix()}", "-C", str(root)]
     try:
         revision = subprocess.run(command + ["rev-parse", "HEAD"], check=True,

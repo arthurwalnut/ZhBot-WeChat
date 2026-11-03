@@ -71,9 +71,12 @@ def read_status(config):
 def _parser():
     parser = argparse.ArgumentParser(description="Astra 群聊机器人：绑定、运行与本机管理")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "bind", "run", "status", "pause", "resume", "stop"):
+    for name in ("doctor", "bind", "run", "status", "pause", "resume", "stop", "relocate"):
         item = sub.add_parser(name)
         item.add_argument("--config", type=Path, default=PROJECT_ROOT / "runtime" / "config.bot.toml")
+        if name == "relocate":
+            item.add_argument("--data-dir", type=Path, required=True, help="已复制到目标机器的数据目录")
+            item.add_argument("--helper-root", type=Path, required=True, help="目标机器的固定 helper 目录")
         if name in ("doctor", "bind"):
             item.add_argument("--pid", type=int, help="明确指定机器人微信 PID")
         if name == "bind":
@@ -161,10 +164,15 @@ def main(argv=None):
             _print(inspect_bound(config.helper_root, pid))
         elif args.command == "bind":
             _bind(args, config)
+        elif args.command == "relocate":
+            from .relocation import relocate
+            _print(relocate(args.config, config, args.data_dir, args.helper_root))
         elif args.command == "status":
             _print(read_status(config))
         elif args.command == "run":
             config.require_binding()
+            from .platform_check import check_windows_desktop
+            check_windows_desktop()
             from .runtime import Runtime
             _print({"config": str(args.config.resolve()), "data_dir": str(config.data_dir), "state": "STARTING"})
             runtime = Runtime(config)

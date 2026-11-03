@@ -104,6 +104,7 @@ def load_config(path: str | Path) -> Config:
 def write_config(path: str | Path, config: Config):
     """Write known settings atomically; existing configuration is backed up first."""
     import json
+    import os
     from datetime import datetime
     import shutil
 
@@ -114,7 +115,12 @@ def write_config(path: str | Path, config: Config):
         lines.append(f"{key} = {json.dumps(getattr(config, key), ensure_ascii=False)}")
     lines.append(f"group_allowlist = {json.dumps(list(config.group_allowlist), ensure_ascii=False)}")
     for key in ("data_dir", "helper_root"):
-        lines.append(f"{key} = {json.dumps(str(getattr(config, key)), ensure_ascii=False)}")
+        value = Path(getattr(config, key)).expanduser().resolve()
+        try:
+            value = Path(os.path.relpath(value, target.parent)).as_posix()
+        except ValueError:  # Different Windows drives cannot have a relative path.
+            value = value.as_posix()
+        lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}")
     if config.wechat_pid is not None:
         lines.append(f"wechat_pid = {config.wechat_pid}")
     lines.append(f"require_native_mention = {str(config.require_native_mention).lower()}")

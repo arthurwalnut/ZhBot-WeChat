@@ -100,7 +100,7 @@ def test_member_upload_isolation_and_persistent_native_resources(tmp_path, monke
     connection.row_factory = sqlite3.Row
     restarted = StickerService(tmp_path)
     item = restarted.random(connection, **scope)
-    assert item["id"] == first["id"] and Path(item["path"]).read_bytes() == gif.getvalue()
+    assert item["id"] == first["id"] and restarted.resolve_path(item).read_bytes() == gif.getvalue()
     with pytest.raises(StickerError):
         restarted.delete_with_pending(connection, **bob, sticker_id=item["id"])
     with connection:

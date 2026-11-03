@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from wechat_bot import __version__
 from wechat_bot.__main__ import _process_alive, read_status
 from wechat_bot.config import load_config
+from wechat_bot.platform_check import check_windows_desktop
 
 
 def startup(config):
@@ -113,10 +114,15 @@ def control(action):
             return dict(record, state="STOPPED", process_alive=False, version=__version__)
     if action not in ("start", "check", "restart"):
         raise ValueError("Unknown launcher action")
+    check_windows_desktop()
     config.require_binding()
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     if not python.is_file():
         raise ValueError("项目 .venv Python 不存在，请先按 README 安装。")
+    probe = subprocess.run([str(python), '-I', str(ROOT / 'launcher/environment.py'), str(ROOT)],
+                           capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+    if probe.returncode:
+        raise ValueError('项目 Python 环境已移动或失效，请在本机运行 scripts/install.ps1 后再启动')
     missing = [name for name in ("PIL", "pefile", "cryptography")
                if importlib.util.find_spec(name) is None]
     if missing:

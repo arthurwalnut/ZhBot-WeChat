@@ -11,7 +11,8 @@ from io import BytesIO
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import secrets
 import tempfile
 import time
@@ -75,8 +76,89 @@ def _gif_info(data):
 
 class StickerService:
     def __init__(self, data_dir):
-        self.directory = Path(data_dir).expanduser().resolve() / "media" / "stickers"
+        self.data_dir = Path(data_dir).expanduser().resolve()
+        self.directory = self.data_dir / "media" / "stickers"
         self.boot_id = uuid.uuid4().hex
+
+    @staticmethod
+    def _matches_path(value, relative):
+        """Accept a relative key or the exact schema suffix of an old absolute path.
+
+        The old absolute location is never opened. Digest metadata and file bytes
+        identify the resource in the current data directory after relocation.
+        """
+        if not isinstance(value, str) or not value:
+            return False
+        parsed = PurePosixPath(value.replace('\\', '/'))
+        if '..' in parsed.parts:
+            return False
+        parts = parsed.parts
+        expected = relative.parts
+        absolute = parsed.is_absolute() or PureWindowsPath(value).is_absolute()
+        return (tuple(p.casefold() for p in (parts[-len(expected):] if absolute else parts)) ==
+                tuple(p.casefold() for p in expected))
+
+    def resolve_path(self, item, *, original=False, verify=True):
+        """Resolve a library record inside this runtime, including legacy records."""
+        item = dict(item)
+        digest = item.get('source_digest' if original else 'digest')
+        if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+            raise StickerError('表情资源缺少有效摘要')
+        relative = Path('media/stickers') / (digest + '.gif')
+        if original:
+            kind = item.get('source_format')
+            if kind not in ('GIF', 'PNG', 'JPEG', 'WEBP', 'BMP'):
+                raise StickerError('表情原件格式尚未支持')
+            shared = kind == 'GIF' and digest == item.get('digest')
+            if not (shared and self._matches_path(item.get('source_path'), relative)):
+                relative = Path('media/stickers/originals') / (digest + '.' + kind.lower())
+        value = item.get('source_path' if original else 'path')
+        if not self._matches_path(value, relative):
+            raise StickerError('表情资源路径与摘要目录不一致')
+        target = self.data_dir / relative
+        if target.resolve() != target or target.is_symlink() or not target.is_file():
+            raise StickerError('表情资源缺失或目录发生重定向：' + relative.as_posix())
+        expected = item.get('source_bytes' if original else 'bytes')
+        limit = MAX_SOURCE_BYTES if original else MAX_BYTES
+        if not 0 < target.stat().st_size <= limit or (expected is not None and target.stat().st_size != expected):
+            raise StickerError('已保存表情的大小不一致')
+        if verify and sha256(target.read_bytes()).hexdigest() != digest:
+            raise StickerError('已保存表情的摘要不一致')
+        return target
+
+    def _resolved_item(self, item):
+        result = dict(item)
+        result['path'] = str(self.resolve_path(result))
+        if result.get('source_path'):
+            result['source_path'] = str(self.resolve_path(result, original=True))
+        return result
+
+    def audit_paths(self, connection):
+        """Read-only relocation check, including soft-deleted library resources."""
+        counts = {'stickers': 0, 'originals': 0}
+        for row in connection.execute('SELECT * FROM stickers ORDER BY id'):
+            try:
+                self.resolve_path(row)
+                counts['stickers'] += 1
+                if row['source_path']:
+                    self.resolve_path(row, original=True)
+                    counts['originals'] += 1
+            except (OSError, ValueError) as error:
+                raise StickerError(f'表情编号 {row["id"]}：{error}') from error
+        return counts
+
+    def send_path(self, payload, item=None):
+        if item is not None:
+            # The outbox snapshot must still refer to the selected library file.
+            record = dict(item)
+            record['path'] = payload.get('path')
+        else:
+            # Pre-library replies have no row ID, but still used SHA-named GIFs.
+            value = payload.get('path', '')
+            name = PurePosixPath(value.replace('\\', '/')).name
+            digest = name[:-4] if name.endswith('.gif') else ''
+            record = {'path': value, 'digest': digest}
+        return self.resolve_path(record)
 
     def initialize(self, connection):
         # execute(), not executescript(): preserve a transaction already in progress.
@@ -203,8 +285,8 @@ class StickerService:
         digest = sha256(data).hexdigest()
         source_digest = sha256(source_data).hexdigest()
         if existing and existing['source_digest'] == source_digest and existing['source_format'] == source_format:
-            self._validate_prepared(existing)
-            return dict(existing, legacy_digest=legacy_digest)
+            resolved = self._resolved_item(existing)
+            return dict(resolved, legacy_digest=legacy_digest)
         destination = self._persist(self.directory, digest + ".gif", data)
         # An unmodified GIF is its own original; keep one physical byte sequence.
         # Existing separate originals stay valid and are never deleted here.
@@ -244,35 +326,18 @@ class StickerService:
                          origin="local", prepared=prepared)
 
     def _validate_prepared(self, prepared):
-        digest = prepared["digest"]
-        path = Path(prepared["path"])
-        if path != self.directory / (digest + ".gif") or path.is_symlink() or not path.is_file():
-            raise StickerError("表情尚未保存到持久目录")
-        # Short local read: do not commit a successful library entry for a missing,
-        # substituted, or incomplete file after preparation.
-        if path.stat().st_size != prepared["bytes"] or not 0 < prepared["bytes"] <= MAX_BYTES:
-            raise StickerError("已保存表情的大小不一致")
-        data = path.read_bytes()
-        if sha256(data).hexdigest() != digest:
-            raise StickerError("已保存表情的摘要不一致")
-        source_digest = prepared["source_digest"]
-        source_path = Path(prepared["source_path"])
-        original_path = self.directory / "originals" / (source_digest + "." + prepared["source_format"].lower())
-        shared_gif = prepared['source_format'] == 'GIF' and source_digest == digest and source_path == path
-        if ((source_path != original_path and not shared_gif)
-                or source_path.is_symlink() or source_path.parent.is_symlink() or not source_path.is_file()
-                or source_path.stat().st_size != prepared["source_bytes"]
-                or not 0 < prepared["source_bytes"] <= MAX_SOURCE_BYTES
-                or sha256(source_path.read_bytes()).hexdigest() != source_digest):
-            raise StickerError("已保存表情原件的路径或摘要不一致")
+        return self.resolve_path(prepared), self.resolve_path(prepared, original=True)
 
     def _add(self, connection, *, account_id, chat_id, sender_id, source_key, created_at, origin, prepared):
         _identity(account_id, chat_id, sender_id)
         if not isinstance(source_key, str) or not source_key:
             raise StickerError("表情入库需要来源记录")
-        self._validate_prepared(prepared)
+        path, source_path = self._validate_prepared(prepared)
+        # Persistent keys are relative to data_dir. Public preparation results
+        # may remain absolute for local callers; historical rows are untouched.
+        prepared = dict(prepared, path=path.relative_to(self.data_dir).as_posix(),
+                        source_path=source_path.relative_to(self.data_dir).as_posix())
         digest, source_digest = prepared['digest'], prepared['source_digest']
-        source_path = Path(prepared['source_path'])
         existing = connection.execute("""SELECT * FROM stickers
             WHERE account_id=? AND chat_id=? AND
               (((digest IN (?,?) OR source_digest=?) AND deleted=0) OR native_message_id=?)
@@ -286,8 +351,8 @@ class StickerService:
             # Do not replace that entry's sendable GIF, owner or native message.
             if existing["source_digest"] is None and existing["source_format"] == prepared["source_format"]:
                 connection.execute("UPDATE stickers SET source_digest=?,source_path=?,source_bytes=? WHERE id=?",
-                    (source_digest, str(source_path), prepared["source_bytes"], existing["id"]))
-            return {**dict(connection.execute("SELECT * FROM stickers WHERE id=?", (existing["id"],)).fetchone()),
+                    (source_digest, prepared['source_path'], prepared["source_bytes"], existing["id"]))
+            return {**self._resolved_item(connection.execute("SELECT * FROM stickers WHERE id=?", (existing["id"],)).fetchone()),
                     "is_duplicate": True}
         fields = ("digest", "path", "bytes", "width", "height", "frames", "format", "source_format", "note",
                   "source_digest", "source_path", "source_bytes")
@@ -297,7 +362,7 @@ class StickerService:
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (account_id, chat_id, sender_id, source_key, created_at,
              *(prepared[name] for name in fields), origin))
-        return {**dict(connection.execute("SELECT * FROM stickers WHERE id=?", (cursor.lastrowid,)).fetchone()),
+        return {**self._resolved_item(connection.execute("SELECT * FROM stickers WHERE id=?", (cursor.lastrowid,)).fetchone()),
                 "is_duplicate": False}
 
     def list(self, connection, *, account_id, chat_id, sender_id, page=1):
@@ -315,7 +380,11 @@ class StickerService:
     def random(self, connection, *, account_id, chat_id):
         rows = connection.execute("""SELECT * FROM stickers
             WHERE account_id=? AND chat_id=? AND deleted=0 ORDER BY id""", (account_id, chat_id)).fetchall()
-        return dict(secrets.choice(rows)) if rows else None
+        if not rows:
+            return None
+        item = dict(secrets.choice(rows))
+        item['path'] = self.resolve_path(item).relative_to(self.data_dir).as_posix()
+        return item
 
     def delete(self, connection, *, account_id, chat_id, sender_id, sticker_id, owner_id=""):
         """Hide an entry. Caller cancels pending sends for its ID in this transaction.

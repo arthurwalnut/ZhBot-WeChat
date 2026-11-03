@@ -82,7 +82,7 @@ def test_sticker_original_and_conversion_are_reused_without_duplicate_files(tmp_
                              source_data=original, existing=existing)
     with c:
         second = service.add_local(c, **dict(actor, chat_id='two@chatroom'), prepared=reused)
-    assert second['path'] == existing['path']
+    assert Path(second['path']) == service.resolve_path(existing)
     assert {p: p.read_bytes() for p in service.directory.rglob('*') if p.is_file()} == files
     assert Path(item['path']).read_bytes() == gif
     with c:

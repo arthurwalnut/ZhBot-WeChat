@@ -191,12 +191,26 @@ class Runtime:
                 c.execute("UPDATE outbox SET state='expired',detail='sticker deleted or unavailable' WHERE id=?",
                           (row['id'],))
                 return True
+            sticker = None
+            if payload.get('kind') == 'sticker' and payload.get('sticker_id') is not None:
+                sticker = dict(c.execute('SELECT * FROM stickers WHERE id=?', (payload['sticker_id'],)).fetchone())
             c.execute("UPDATE outbox SET state='sending',attempts=attempts+1 WHERE id=?",(row['id'],))
         # Rendering/native calls do not hold the business write transaction.
         try:
             path = payload.get('path')
             if payload.get('board'):
                 path = str(board_cache.render_cached(payload['board'], self.config.data_dir))
+            elif payload['kind'] == 'sticker':
+                path = str(self.stickers.send_path(payload, sticker))
+            elif path:
+                # Non-board images have no digest for remapping an old location.
+                # Relative image keys are data_dir-based; external paths fail.
+                target = Path(path)
+                target = target if target.is_absolute() else self.config.data_dir / target
+                target = target.resolve(strict=True)
+                if not target.is_relative_to(self.config.data_dir.resolve()):
+                    raise ValueError('Reply media path is outside the current data directory')
+                path = str(target)
         except Exception as error:
             result = SendResult('failed',type(error).__name__,True)
         else:

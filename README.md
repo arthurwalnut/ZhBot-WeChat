@@ -1,6 +1,6 @@
-# Astra WeChat Lab v0.2.7.1
+# Astra WeChat Lab v0.2.8
 
-本版本地扩充 3～10 字母 Wordle 词库，与现有版本合并去重后共 250,871 个可猜词。简单问答、托盘、游戏规则和固定 `ZhBot.exe` 入口沿用 v0.2.7。更新说明见 [v0.2.7.1 交付文档](docs/DELIVERY_v0.2.7.1.md)，安装流程见 [v0.2.5 交付文档](docs/DELIVERY_v0.2.5.md)。本版按用户要求仅本地提交，不推送远程。
+本版处理项目换目录、换电脑时的配置、表情路径、虚拟环境和旧进程记录，并加入 Windows 桌面环境预检。固定 `ZhBot.exe`、群指令和游戏规则沿用现有实现；3～10 字母 Wordle 词库共 250,871 个可猜词。安装、迁移步骤与 Windows Server 2022/2025 的验证边界见 [v0.2.8 交付与迁移文档](docs/DELIVERY_v0.2.8.md)。
 
 已有真实群记录覆盖文本、真实 @、棋盘 PNG、静态原生表情、双成员身份和 Wordle 接力；新群已完成主人登记、本机确认、重启和实际收发。用户在新群测试后反馈“目前来看没有什么问题”。原生回执、数据库证据与手机确认分别记录于 [兼容与验收结果](docs/COMPATIBILITY.md)，不能把 accepted 回执当成手机收件确认。
 
@@ -10,9 +10,9 @@
 
 ## 安装
 
-在机器人专用 Windows 用户的已登录桌面中运行。使用 Python 3.12 x64、Git 和已正常登录的机器人微信。本机现有 `.venv`、`.python` 可继续使用；仅在新机器且尚无环境时执行 `py -3.12 -m venv .venv`。
+在机器人专用 Windows 用户的已登录桌面中运行。部署前提为 Windows 10/11 x64 或 Windows Server 2022/2025 **Desktop Experience x64**、.NET Framework 4.8 或后续 4.x、PowerShell 5.1+、Python 3.12 x64、Git，以及已正常登录的机器人微信。Server 两个版本目前完成官方依赖核对与预检分支测试，尚无 Server 真机收发验收；Server Core、Nano、Session 0 服务不属于本项目部署方式。
 
-新安装可直接执行 `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1`，会创建缺失的虚拟环境、安装锁定依赖、获取固定 helper，并仅在配置不存在时复制空白示例；不会绑定或启动微信桥接。也可在项目根目录的 PowerShell 手动执行：
+新安装执行 `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1`，创建虚拟环境、安装锁定依赖、获取固定 helper，并仅在配置不存在时复制空白示例。复制的 `.venv` 需在目标机器重建：使用 `-RecreateEnvironment`，可用 `-PythonPath` 指定目标机 Python 3.12 x64；旧环境先移至项目内 `.venv.backup-*` 保留。重建前正常停止机器人并退出托盘管理器。安装脚本不加载微信桥接。已有有效环境的手动更新命令：
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'
@@ -83,7 +83,7 @@ CLI 的 `bind --group` **替换整个群白名单**，需逐个传入所有要�
 
 在同一机器人账号下，多群共享一个进程和数据库；Wordle 对局/战绩、表情池按群隔离，zxj 每日结果按成员全局共享。代码和隔离数据测试已覆盖新群登记、确认、重启后的路由及移除后的待发检查；目标群的实际收发与后台条件仍以 [验收记录](docs/COMPATIBILITY.md) 为准。
 
-新电脑部署需要完整项目、Python 3.12 x64、虚拟环境、Git、固定 helper 源码及其 `.git`/许可、机器人登录和真实绑定，单独复制 EXE 不构成完整安装。仅把旧 `runtime` 复制到另一目录也不构成数据迁移：配置和旧表情元数据含绝对路径，需单独迁移核对。锁屏、微信隐藏至托盘、远控断开及掉登录恢复目前没有完整真机验收，不据此宣称任意电脑无人值守可用。
+新电脑部署需要完整项目、目标机虚拟环境、固定 helper 源码及其 `.git`/许可、完整数据目录和机器人登录。按 [迁移步骤](docs/DELIVERY_v0.2.8.md#迁移到另一目录或电脑) 执行 `relocate`：审计复制的数据库与媒体、归档旧进程记录、更新配置路径并清除旧 PID，然后在目标桌面重新绑定同一账号。旧表情绝对路径由摘要映射到当前数据目录，历史记录原样保留。锁屏、微信隐藏至托盘、远控断开及掉登录恢复目前没有完整真机验收。
 
 ## 启动、状态与停止
 

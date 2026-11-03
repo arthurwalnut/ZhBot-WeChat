@@ -7,8 +7,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def _font(size):
-    windows = Path(os.environ.get("WINDIR", "C:/Windows"))
-    for path in (windows / "Fonts" / "arialbd.ttf", windows / "Fonts" / "segoeuib.ttf"):
+    windows = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    for path in (Path(windows) / "Fonts" / name for name in ("arialbd.ttf", "segoeuib.ttf")) if windows else ():
         try:
             return ImageFont.truetype(str(path), size)
         except OSError:

@@ -31,7 +31,10 @@ def recognize_image(image: Image.Image, language: str = "en-US", *, timeout: flo
         raise OcrError("OCR timeout 必须为正数。")
     if not image.width or not image.height:
         raise OcrError("OCR 图片宽高必须大于零。")
-    powershell = Path(os.environ.get("WINDIR", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    windows = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if not windows:
+        raise OcrError("无法定位 Windows 系统目录；请检查 WINDIR/SystemRoot")
+    powershell = Path(windows) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     try:
         script = files("wechat_reader").joinpath("windows_ocr.ps1").read_text(encoding="utf-8")
         buffer = BytesIO()
